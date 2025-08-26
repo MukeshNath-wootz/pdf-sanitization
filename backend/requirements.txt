@@ -9,9 +9,6 @@ pytesseract
 imagehash
 opencv-python-headless
 numpy
-requests
-re
-textwrap
-os 
-json
 python-multipart
+requests
+
