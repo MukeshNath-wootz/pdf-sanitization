@@ -3,7 +3,7 @@ import os
 import argparse
 import fitz  # PyMuPDF
 from collections import defaultdict
-
+import tempfile
 
 from template_utils       import TemplateManager, extract_zones_content
 from template_utils       import transform_bbox_for_rotation
@@ -15,6 +15,21 @@ from replacement_utils    import collect_manual_replacements, apply_manual_repla
 from placement_utils      import insert_content_in_rectangles
 from llm_utils import get_sensitive_terms_from_llm
 from paper_sz_ort_utils    import _classify_pdf_layout, _filter_rectangles_for_layout, _validate_replicated_rects_for_pdf
+
+import tempfile
+
+# Optional Supabase client (same envs as api_app.py)
+try:
+    from supabase import create_client  # type: ignore
+except Exception:
+    create_client = None
+
+_SB_URL  = os.getenv("SUPABASE_URL")
+_SB_KEY  = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+_SB_BUCKET = os.getenv("SUPABASE_BUCKET", "pdf-sanitization")
+_SB_LOGOS_PREFIX = os.getenv("SUPABASE_LOGOS_PREFIX", "logos").rstrip("/")
+
+_sb = create_client(_SB_URL, _SB_KEY) if (create_client and _SB_URL and _SB_KEY) else None
 
 
 def extract_raw_text(pdf_path):
@@ -282,11 +297,42 @@ def process_batch(
         RedactionEngine.redact(pdf, all_rects, sanitized)
 
     # ── Step 6: Place images into specified rectangles ──
+        # Resolve Supabase storage keys (e.g., "logos/<client>/<file>") to local temp files
+        def _resolve_logo_to_local(val: str, _cache: dict) -> str:
+            # cache by key → local path to avoid re-downloading for multiple pages
+            if val in _cache:
+                return _cache[val]
+
+            # If it looks like a Supabase storage key and client is configured, download
+            looks_like_storage_key = isinstance(val, str) and ("/" in val) and not val.lower().startswith(("http://", "https://"))
+            if _sb and looks_like_storage_key:
+                # Treat 'val' as a storage key under the same bucket (e.g., "logos/acme/logo.png")
+                try:
+                    data = _sb.storage.from_(_SB_BUCKET).download(val)
+                    tmp_dir = _cache.setdefault("__dir__", tempfile.mkdtemp(prefix="logos_"))
+                    local = os.path.join(tmp_dir, os.path.basename(val))
+                    with open(local, "wb") as f:
+                        # supabase-py may return bytes or str
+                        if isinstance(data, bytes):
+                            f.write(data)
+                        else:
+                            f.write(data.encode("utf-8"))
+                    _cache[val] = local
+                    return local
+                except Exception:
+                    # fall through to return the original value
+                    pass
+
+            # Not a storage key or download failed → return original (may already be a local path)
+            _cache[val] = val
+            return val
+
         if image_map:
             print(f"[Place] image placement initiated: {image_map}")
             print(f"[Place] High-conf rects: {len(high_conf_rects_rotaware)}")
             # image_map keys in template are template indices (as strings)
             # We need to create an enumerated map aligned to the rectangles we pass now.
+            _logo_cache = {}
             enum_image_map = {}
             for idx, rc in enumerate(high_conf_rects_rotaware):
                 ti = rc.get("tidx")
@@ -295,7 +341,7 @@ def process_batch(
                     mapped = image_map.get(ti)
                 print(f"[Place] idx={idx} (page={rc['page']}, tidx={ti}) → mapped={mapped}")
                 if mapped:
-                    enum_image_map[idx] = mapped
+                    enum_image_map[idx] = _resolve_logo_to_local(mapped, _logo_cache)
 
             if not enum_image_map:
                 print("[Place][SKIP] No rects eligible for image placement after confidence gating "
