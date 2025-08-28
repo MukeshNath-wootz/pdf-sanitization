@@ -9,7 +9,7 @@ import re
 # ——— API Configuration ———
 GEMMA3_API_URL  = "https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent"
 # GEMMA3_MODEL    = None
-GEMMA3_API_KEY  = "AIzaSyC_3sCoLKIztbgH3j7I5FkjSouwUeZGQOg"
+GEMMA3_API_KEY = os.getenv("GEMMA3_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
 if not GEMMA3_API_KEY:
     raise RuntimeError("Set GEMMA3_API_KEY in your environment before running")
 
