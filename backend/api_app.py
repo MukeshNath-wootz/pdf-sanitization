@@ -21,6 +21,11 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+# Optional friendly root
+@app.get("/")
+async def root():
+    return {"ok": True, "service": "pdf-sanitization-api"}
+
 # Single, consistent output folder (local fallback serving)
 STATIC_DIR = os.path.abspath("output_sanitized")
 os.makedirs(STATIC_DIR, exist_ok=True)
@@ -29,7 +34,7 @@ def _safe_client_id(s: str) -> str:
     s = (s or "").strip().lower().replace(" ", "_")
     return "".join(ch for ch in s if ch.isalnum() or ch in "_-") or "template"
 
-# ---------- Optional Supabase outputs upload ----------
+# ---------- Optional Supabase outputs/templates/logos ----------
 try:
     from supabase import create_client  # type: ignore
 except Exception:
@@ -46,25 +51,26 @@ _sb = create_client(_SB_URL, _SB_KEY) if (create_client and _SB_URL and _SB_KEY)
 
 def _sb_upload_and_sign(local_path: str, client: str, job_id: str) -> str | None:
     """
-    Upload local PDF to Supabase and return a URL (public or signed 24h).
-    Returns None if Supabase is not configured.
+    Upload local PDF to Supabase and return a URL (public or 24h signed).
+    Returns None if Supabase not configured or upload fails.
     """
     if not _sb:
         return None
-    key_name = os.path.basename(local_path)
-    remote_path = f"{_SB_OUT_PREFIX}/{client}/{job_id}/{key_name}"
-    with open(local_path, "rb") as f:
-        _sb.storage.from_(_SB_BUCKET).upload(
-            remote_path, f, {"contentType": "application/pdf", "upsert": True}
-        )
-    # public if bucket is public; else signed for 24h
     try:
-        public_url = _sb.storage.from_(_SB_BUCKET).get_public_url(remote_path)
-        if public_url:
-            return public_url
-    except Exception:
-        pass
-    try:
+        key_name = os.path.basename(local_path)
+        remote_path = f"{_SB_OUT_PREFIX}/{client}/{job_id}/{key_name}"
+        with open(local_path, "rb") as f:
+            _sb.storage.from_(_SB_BUCKET).upload(
+                remote_path, f, {"contentType": "application/pdf", "upsert": True}
+            )
+        # Try public first (if bucket is public)
+        try:
+            public_url = _sb.storage.from_(_SB_BUCKET).get_public_url(remote_path)
+            if public_url:
+                return public_url
+        except Exception:
+            pass
+        # Otherwise signed for 24h
         signed = _sb.storage.from_(_SB_BUCKET).create_signed_url(remote_path, 60 * 60 * 24)
         return signed.get("signedURL")
     except Exception:
@@ -77,7 +83,7 @@ async def sanitize(
     template_zones: str = Form(...),
     manual_names: str = Form(default="[]"),
     text_replacements: str = Form(default="{}"),
-    image_map: str = Form("{}"),  # JSON: {tidx: "logo.png"}
+    image_map: str = Form("{}"),  # JSON: {tidx: "logos/<filename>"}
     threshold: float = Form(default=0.9),
     client_name: str = Form(...),
 ):
@@ -137,7 +143,6 @@ async def sanitize(
         fn = f"{base}_sanitized.pdf"
         local_out = os.path.join(STATIC_DIR, fn)
 
-        # If Supabase configured, upload + sign; else use local /api/download
         public_url = _sb_upload_and_sign(local_out, client=client, job_id=job_id)
         if public_url:
             outs.append({"name": fn, "url": public_url})
@@ -233,17 +238,15 @@ async def download_file(filename: str):
 
 @app.get("/api/clients")
 async def list_clients():
-    # 1) Supabase-first: list folders under templates/ and verify each has at least one <client>_v*.json
+    # Supabase-first listing of templates/<client>/, fallback to local disk
     if _sb:
         try:
             top = _sb.storage.from_(_SB_BUCKET).list(path=_SB_TPL_PREFIX) or []
             candidates = [it.get("name", "") for it in top if it.get("name")]
             clients = []
             for name in candidates:
-                # Treat entries without a dot as "folders"
                 if "." in name:
-                    continue
-                # Verify the subfolder has at least one versioned json like <client>_vN.json
+                    continue  # skip files at templates/ root
                 sub = _sb.storage.from_(_SB_BUCKET).list(path=f"{_SB_TPL_PREFIX}/{name}") or []
                 has_template = any(
                     ent.get("name", "").startswith(f"{name}_v") and ent.get("name", "").endswith(".json")
@@ -254,10 +257,8 @@ async def list_clients():
             clients.sort()
             return {"clients": clients}
         except Exception:
-            # fall back to local if Storage listing fails
-            pass
+            pass  # fall back to local
 
-    # 2) Local fallback (unchanged)
     tm = TemplateManager()
     root = Path(tm.store_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -287,8 +288,5 @@ async def upload_logo(file: UploadFile = File(...)):
     local_path = os.path.join(local_dir, filename)
     with open(local_path, "wb") as f:
         f.write(data)
-    # Return a "key-like" path that your pipeline resolver will treat as local
+    # Return a "key-like" path that the pipeline will treat as local
     return {"key": f"logos/{filename}"}
-
-
-
