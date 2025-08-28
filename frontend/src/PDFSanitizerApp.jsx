@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+// Backend base URL (set Vercel env: VITE_API_BASE=https://<your-render>.onrender.com)
+const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/+$/, "") || "";
 
 /* ================== Inline Icon Components ================== */
 function IconUploadCloud(props){return(<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" {...props}><path d="M3 15a4 4 0 0 0 4 4h10a5 5 0 0 0 0-10 7 7 0 0 0-13 2" /><path d="M12 12v9" /><path d="m16 16-4-4-4 4" /></svg>);}
@@ -247,11 +249,14 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
       };
       const idxInZones = template_zones.push(zone) - 1;
 
-      // image_map keyed by index in template_zones
+      // image_map keyed by index in template_zones (use storage key returned by /api/upload-logo)
       const a = rectActions[r.id];
-      if (a?.action === "logo" && a.logoFile) {
-        image_map[idxInZones] = a.logoFile.name;
-        form.append("logos[]", a.logoFile, a.logoFile.name);
+      if (a?.action === "logo") {
+        if (!a.logoKey) {
+          console.warn("Logo rectangle without uploaded key; skipping placement for this rect.");
+        } else {
+          image_map[idxInZones] = a.logoKey; // e.g., "logos/WootzWork_logo.png"
+        }
       }
     });
 
@@ -263,7 +268,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
     form.append("client_name", clientName); // ← NEW: tell API which name to save the template under
     // form.append("template_source_index", String(templateFileIdx ?? activeIndex));
 
-    const res = await fetch("/api/sanitize", { method: "POST", body: form });
+    const res = await fetch(`${API_BASE}/api/sanitize`, { method: "POST", body: form });
     if (!res.ok) { alert("Backend error while sanitizing."); return; }
     const payload = await res.json();
 
@@ -272,9 +277,9 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
       console.log("Saved template:", payload.template_id);
     }
 
-    const results = (payload.files || []).map(f => ({
-      name: f.originalName,
-      url: `/api/download/${encodeURIComponent(f.originalName)}`,
+    const results = (payload.outputs || []).map(o => ({
+      name: o.name,
+      url: o.url, // already public/signed or /api/download/...
     }));
     if (!results.length) { alert("No output files reported by backend."); return; }
 
@@ -403,13 +408,31 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
                                 type="file"
                                 accept=".png,.jpg,.jpeg,.webp,.svg"
                                 className="mt-1 block w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs file:mr-3 file:rounded file:border-0 file:bg-neutral-700 file:px-3 file:py-1"
-                                onChange={(e)=>{
-                                  const f=e.target.files?.[0]||null;
-                                  setRectActions(prev=>({...prev,[r.id]:{ action:"logo", logoFile:f }}));
+                                onChange={async (e)=>{
+                                  const f = e.target.files?.[0] || null;
+                                  if (!f) {
+                                    setRectActions(prev=>({...prev,[r.id]:{ action:"logo", logoFile:null, logoKey:undefined }}));
+                                    return;
+                                  }
+                                  // 1) upload to backend -> returns { key: "logos/<filename>" }
+                                  const fd = new FormData();
+                                  fd.append("file", f);
+                                  let key;
+                                  try {
+                                    const resp = await fetch(`${API_BASE}/api/upload-logo`, { method: "POST", body: fd });
+                                    if (!resp.ok) throw new Error(`Logo upload failed (${resp.status})`);
+                                    const js = await resp.json();
+                                    key = js.key;
+                                  } catch (err) {
+                                    alert(`Logo upload failed. ${err?.message || err}`);
+                                    return;
+                                  }
+                                  // 2) store both file (for UI display) and key (for API image_map)
+                                  setRectActions(prev=>({...prev,[r.id]:{ action:"logo", logoFile:f, logoKey:key }}));
                                 }}
                               />
                               {rectActions[r.id]?.logoFile && (
-                                <div className="mt-1 text-neutral-400">{rectActions[r.id].logoFile.name}</div>
+                                <div className="mt-1 text-neutral-400">{rectActions[r.id].logoFile.name}{rectActions[r.id]?.logoKey ? (<span className="ml-2 text-xs text-emerald-400">({rectActions[r.id].logoKey})</span>) : null}</div>
                               )}
                             </label>
                           )}
@@ -494,15 +517,15 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
     form.append("threshold", String(threshold));
     form.append("client_name", clientName); // key for v1 template on server
 
-    const res = await fetch("/api/sanitize-existing", { method: "POST", body: form });
+    const res = await fetch(`${API_BASE}/api/sanitize-existing`, { method: "POST", body: form });
     if (!res.ok) { alert("Backend error while sanitizing."); return; }
     const payload = await res.json();
 
     if (payload.template_id) console.log("Using template:", payload.template_id);
 
-    const results = (payload.files || []).map(f => ({
-      name: f.originalName,
-      url: `/api/download/${encodeURIComponent(f.originalName)}`,
+    const results = (payload.outputs || []).map(o => ({
+      name: o.name,
+      url: o.url,
     }));
     if (!results.length) { alert("No output files reported by backend."); return; }
 
@@ -615,7 +638,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/clients");
+        const res = await fetch(`${API_BASE}/api/clients`);
         const data = await res.json();
         setExistingClients(Array.isArray(data.clients) ? data.clients : []);
       } catch (e) {
