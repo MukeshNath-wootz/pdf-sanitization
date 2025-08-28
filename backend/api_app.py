@@ -39,6 +39,8 @@ _SB_URL  = os.getenv("SUPABASE_URL")
 _SB_KEY  = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
 _SB_BUCKET = os.getenv("SUPABASE_BUCKET", "pdf-sanitization")
 _SB_OUT_PREFIX = os.getenv("SUPABASE_OUTPUTS_PREFIX", "sanitized").rstrip("/")
+_SB_TPL_PREFIX = os.getenv("SUPABASE_TEMPLATES_PREFIX", "templates").rstrip("/")
+
 
 _sb = create_client(_SB_URL, _SB_KEY) if (create_client and _SB_URL and _SB_KEY) else None
 
@@ -231,6 +233,31 @@ async def download_file(filename: str):
 
 @app.get("/api/clients")
 async def list_clients():
+    # 1) Supabase-first: list folders under templates/ and verify each has at least one <client>_v*.json
+    if _sb:
+        try:
+            top = _sb.storage.from_(_SB_BUCKET).list(path=_SB_TPL_PREFIX) or []
+            candidates = [it.get("name", "") for it in top if it.get("name")]
+            clients = []
+            for name in candidates:
+                # Treat entries without a dot as "folders"
+                if "." in name:
+                    continue
+                # Verify the subfolder has at least one versioned json like <client>_vN.json
+                sub = _sb.storage.from_(_SB_BUCKET).list(path=f"{_SB_TPL_PREFIX}/{name}") or []
+                has_template = any(
+                    ent.get("name", "").startswith(f"{name}_v") and ent.get("name", "").endswith(".json")
+                    for ent in sub
+                )
+                if has_template:
+                    clients.append(name)
+            clients.sort()
+            return {"clients": clients}
+        except Exception:
+            # fall back to local if Storage listing fails
+            pass
+
+    # 2) Local fallback (unchanged)
     tm = TemplateManager()
     root = Path(tm.store_dir)
     root.mkdir(parents=True, exist_ok=True)
