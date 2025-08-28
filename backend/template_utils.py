@@ -1,6 +1,8 @@
 import os
 import json
 import re
+from typing import List, Dict, Tuple, Optional
+
 import fitz  # PyMuPDF
 import pdfplumber
 import pytesseract
@@ -10,12 +12,31 @@ from PIL import Image
 import imagehash
 from imagehash import phash
 
-# <-- adjust this path if your installer went somewhere different
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-# <-- ensure you have the Tesseract OCR installed and this path is correct
-
+# Portable Tesseract path: works on Render (Linux) and Windows (if env is set)
+pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", "tesseract")
 
 from paper_sz_ort_utils import _classify_pdf_layout, _filter_rectangles_for_layout
+
+# Optional Supabase Storage
+# =========================
+try:
+    from supabase import create_client  # type: ignore
+except Exception:
+    create_client = None
+
+_SUPABASE_URL = os.getenv("SUPABASE_URL")
+# prefer service role for signing and upserts; anon key also works if bucket is public
+_SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+_SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "pdf-sanitization")
+_SUPABASE_TEMPLATES_PREFIX = os.getenv("SUPABASE_TEMPLATES_PREFIX", "templates").rstrip("/")
+
+_sb = create_client(_SUPABASE_URL, _SUPABASE_KEY) if (create_client and _SUPABASE_URL and _SUPABASE_KEY) else None
+
+# =========================
+# Local constants & helpers
+# =========================
+TEMPLATE_STORE = "templates"  # local fallback (keeps your current layout)
+os.makedirs(TEMPLATE_STORE, exist_ok=True)
 
 # local helpers (tiny, self-contained)
 def _bbox_inside_page(page, bbox, tol=0.1):
@@ -86,9 +107,9 @@ def _clamp_bbox(b, w, h, tol=1e-6):
     if y1 <= y0: y1 = min(h, y0 + tol)
     return (x0,y0,x1,y1)
 
-# Constants
-TEMPLATE_STORE = "templates"  # Directory to save template profiles (rectangle's text and images)
-
+# =========================
+# Template Manager
+# =========================
 class TemplateManager:
     """
     Handles saving and loading of client-defined template profiles:
@@ -99,12 +120,15 @@ class TemplateManager:
     """
     _ID_RE = re.compile(r"^(?P<client>[A-Za-z0-9_\-]+)_v(?P<ver>\d+)$")
 
-    def __init__(self, store_dir=TEMPLATE_STORE):
-        os.makedirs(store_dir, exist_ok=True)
+    def __init__(self, store_dir: str = TEMPLATE_STORE):
         self.store_dir = store_dir
+        os.makedirs(self.store_dir, exist_ok=True)
+        self.sb = _sb
+        self.bucket = _SUPABASE_BUCKET
+        self.prefix = _SUPABASE_TEMPLATES_PREFIX
 
     # ---------- helpers ----------
-    def parse_template_id(self, template_id: str) -> tuple[str, int | None]:
+    def parse_template_id(self, template_id: str) -> Tuple[str, Optional[int]]:
         m = self._ID_RE.match(template_id)
         if not m:
             return template_id, None
@@ -116,25 +140,50 @@ class TemplateManager:
     def _resolve_profile_path(self, template_id: str, for_write: bool = False) -> str:
         client, ver = self.parse_template_id(template_id)
         if ver is None:
-            # legacy flat path
             path = os.path.join(self.store_dir, f"{template_id}.json")
-            if for_write:
-                os.makedirs(self.store_dir, exist_ok=True)
+            if for_write: os.makedirs(self.store_dir, exist_ok=True)
             return path
-        # versioned path
         cdir = self._client_dir(client)
-        if for_write:
-            os.makedirs(cdir, exist_ok=True)
+        if for_write: os.makedirs(cdir, exist_ok=True)
         return os.path.join(cdir, f"{template_id}.json")
 
-    def list_versions(self, client: str) -> list[int]:
+    def _sb_key_for(self, template_id: str) -> Optional[str]:
+        if not self.sb:
+            return None
+        client, ver = self.parse_template_id(template_id)
+        if ver is None:
+            # legacy flat id
+            return f"{self.prefix}/{template_id}.json"
+        return f"{self.prefix}/{client}/{template_id}.json"
+
+     # ---------- list versions ----------
+    def list_versions(self, client: str) -> List[int]:
+        """
+        Prefer listing from Supabase; fall back to local disk.
+        """
+        if self.sb:
+            try:
+                remote_dir = f"{self.prefix}/{client}"
+                items = self.sb.storage.from_(self.bucket).list(path=remote_dir) or []
+                out = []
+                for it in items:
+                    nm = (it.get("name") or "").strip()
+                    if nm.endswith(".json") and nm.startswith(f"{client}_v"):
+                        m = self._ID_RE.match(nm[:-5])
+                        if m:
+                            out.append(int(m.group("ver")))
+                out.sort()
+                return out
+            except Exception:
+                pass  # fall back to local
+
         cdir = self._client_dir(client)
         if not os.path.isdir(cdir):
             return []
         out = []
         for fn in os.listdir(cdir):
             if fn.endswith(".json") and fn.startswith(f"{client}_v"):
-                m = self._ID_RE.match(fn[:-5])  # strip .json
+                m = self._ID_RE.match(fn[:-5])
                 if m:
                     out.append(int(m.group("ver")))
         out.sort()
@@ -144,86 +193,99 @@ class TemplateManager:
         vers = self.list_versions(client)
         return vers[-1] if vers else 0
 
-    def latest_version_id(self, client: str) -> str | None:
+    def latest_version_id(self, client: str) -> Optional[str]:
         n = self.latest_version_number(client)
         return f"{client}_v{n}" if n > 0 else None
 
     def next_version_id(self, client: str) -> str:
         return f"{client}_v{self.latest_version_number(client) + 1}"
 
-    # ---------- public API ----------
-    def save_profile(self, template_id: str, pdf_path: str, rectangles: list,
-                     image_map: dict = None):
-        """
-        Extract content within rectangles and save as JSON profile.
-        Stored under templates/<client>/<client>_vN.json if template_id looks like "<client>_vN",
-        otherwise legacy flat path templates/<template_id>.json.
+    # ---------- save/load ----------
+    def _save_profile_local(self, template_id: str, profile: dict) -> None:
+        path = self._resolve_profile_path(template_id, for_write=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(profile, f, indent=2, ensure_ascii=False)
 
-        Enhancements:
-        - Detect reference PDF layout (A3/A4 + H/V) and filter rectangles to this layout (ANY passes everywhere).
-        - Skip out-of-bounds rectangles during extraction instead of crashing.
+    def _save_profile_remote(self, template_id: str, profile: dict) -> None:
+        if not self.sb:
+            return
+        key = self._sb_key_for(template_id)
+        if not key:
+            return
+        data = json.dumps(profile, ensure_ascii=False).encode("utf-8")
+        self.sb.storage.from_(self.bucket).upload(
+            key, data, {"contentType": "application/json", "upsert": True}
+        )
+
+    def _load_profile_remote(self, template_id: str) -> Optional[dict]:
+        if not self.sb:
+            return None
+        key = self._sb_key_for(template_id)
+        if not key:
+            return None
+        try:
+            data = self.sb.storage.from_(self.bucket).download(key)
+            if not data:
+                return None
+            # supabase-py may return bytes or str; normalize
+            if isinstance(data, bytes):
+                return json.loads(data.decode("utf-8"))
+            return json.loads(data)
+        except Exception:
+            return None
+
+    def save_profile(
+        self,
+        template_id: str,
+        pdf_path: str,
+        rectangles: list,
+        image_map: dict | None = None
+    ):
         """
-        from template_utils import extract_zones_content  # local import for reliability
-        # 1) detect layout and filter rectangles accordingly
+        Single-PDF reference profile save.
+        Filters rectangles by detected layout, extracts contents, then writes JSON
+        both locally and to Supabase (if configured).
+        """
         paper, orient, _ = _classify_pdf_layout(pdf_path)
-        print(f"[Template] Detected layout: PDF name={pdf_path} paper={paper}, orientation={orient}")
-
         active_rects = _filter_rectangles_for_layout(rectangles, paper, orient)
-
         if not active_rects:
             raise ValueError(
-                f"No rectangles match the reference PDF layout (paper={paper}, orientation={orient}). "
-                "Tag rectangles with 'paper'/'orientation' or choose a matching reference PDF."
+                f"No rectangles match the reference PDF layout (paper={paper}, orientation={orient})."
             )
 
-        # 2) extract contents safely; collect skips (no crash)
         contents, used_rects, skipped = extract_zones_content(pdf_path, active_rects, _return_skips=True)
-
-        if skipped:
-            print(f"[Template] Warning: {len(skipped)} rectangle(s) skipped (OOB/invalid) while saving '{template_id}'.")
-
         if not contents:
-            raise ValueError("All rectangles were invalid/out-of-bounds for the reference PDF; nothing to save.")
+            raise ValueError("All rectangles were invalid/out-of-bounds; nothing to save.")
 
-        # 3) store filtered rectangles only (template stays layout-specific)
-        profile  = {
-            'rectangles': used_rects,           # store the set that actually worked for this layout
-            'contents': contents,
-            'image_map': image_map or {}
+        profile = {
+            "rectangles": used_rects,
+            "contents": contents,
+            "image_map": image_map or {},
         }
-        path = self._resolve_profile_path(template_id, for_write=True)
-        with open(path, 'w') as f:
-            json.dump(profile, f, indent=2)
+        # local + remote
+        self._save_profile_local(template_id, profile)
+        self._save_profile_remote(template_id, profile)
 
-    def save_profile_multi(self, template_id: str,
-                        rectangles: list[dict],
-                        index_to_path: dict[int, str],
-                        image_map: dict | None = None) -> None:
+    def save_profile_multi(
+        self,
+        template_id: str,
+        rectangles: List[dict],
+        index_to_path: Dict[int, str],
+        image_map: Optional[dict] = None,
+    ) -> None:
         """
-        Multi-PDF variant of save_profile:
-        - Rectangles may come from different PDFs (identified by file_idx).
-        - Extracts text/ocr/image hash by calling extract_zones_content ONCE per source PDF,
-            passing ONLY the rectangles that belong to that PDF.
-        - Filters rectangles by the SOURCE PDF's (paper, orientation) so mismatched rects are skipped early.
-        - Persists one unified profile under templates/<client>/<client>_vN.json.
-
-        Expected rect keys per item:
-        {
-            "page": int,               # 1-based page number you drew on (robustly normalized below)
-            "bbox": [x0,y0,x1,y1],     # as-drawn (top-left origin) absolute px
-            "paper": "A1|A2|A3|A4|ANY",
-            "orientation": "H|V|ANY",
-            "file_idx": int            # index of the uploaded PDF this rect came from
-        }
+        Multi-PDF reference save:
+          - groups rectangles by 'file_idx'
+          - for each source PDF, filters rects by its layout
+          - extracts contents once per source
+          - stores a unified profile
         """
-        from template_utils import extract_zones_content  # local import for reliability
-
-        used_rects: list[dict] = []
-        contents: list[dict] = []
+        used_rects: List[dict] = []
+        contents: List[dict] = []
         skipped_total = 0
 
-        # ---- 1) Group rectangles by source PDF index ----
-        grouped: dict[int, list[dict]] = {}
+        # group by source index
+        grouped: Dict[int, List[dict]] = {}
         for r in rectangles or []:
             fidx = int(r.get("file_idx", 0))
             grouped.setdefault(fidx, []).append(r)
@@ -231,62 +293,34 @@ class TemplateManager:
         if not grouped:
             raise ValueError("No rectangles were provided for multi-PDF save.")
 
-        # ---- 2) Process each source PDF exactly once ----
         for fidx, rects_for_pdf in grouped.items():
             src_pdf = index_to_path.get(fidx)
             if not src_pdf or not os.path.exists(src_pdf):
-                print(f"[TemplateMulti] Missing/invalid source for file_idx={fidx}; skipping group.")
                 continue
 
-            # 2a) Normalize rects: ensure 1-based page, normalized bbox, preserve paper/orientation
-            norm_rects: list[dict] = []
+            # normalize rects
+            norm_rects: List[dict] = []
             for r in rects_for_pdf:
-                # Normalize page to 1-based (extract_zones_content expects 1-based, clamps internally)
-                page = r.get("page", 0)
-                try:
-                    page = int(page)
-                except Exception:
-                    page = 0
-                if page < 0:
-                    page = 0
-
-                # Normalize bbox
+                pg = int(r.get("page", 0) or 0)
+                if pg < 0: pg = 0
                 x0, y0, x1, y1 = r.get("bbox", (0, 0, 0, 0))
                 bbox = _normalized_bbox((x0, y0, x1, y1))
-
-                nr = {"page": page, "bbox": bbox}
-                if "paper" in r:
-                    nr["paper"] = r["paper"]
-                if "orientation" in r:
-                    nr["orientation"] = r["orientation"]
+                nr = {"page": pg, "bbox": bbox}
+                if "paper" in r: nr["paper"] = r["paper"]
+                if "orientation" in r: nr["orientation"] = r["orientation"]
                 norm_rects.append(nr)
 
-            # 2b) Detect the SOURCE PDF layout and filter to matching rectangles
+            # filter by THIS source PDF's layout
             try:
                 src_paper, src_orient, _ = _classify_pdf_layout(src_pdf)
-                print(f"[TemplateMulti] Source={src_pdf} layout paper={src_paper}, orientation={src_orient}")
-            except Exception as e:
-                print(f"[TemplateMulti] Could not classify layout for {src_pdf}: {e}")
+            except Exception:
                 src_paper, src_orient = None, None
 
-            if src_paper and src_orient:
-                active_rects = _filter_rectangles_for_layout(norm_rects, src_paper, src_orient)
-            else:
-                # If layout detection fails, use all rects for this source as a fallback.
-                active_rects = norm_rects
-
+            active_rects = _filter_rectangles_for_layout(norm_rects, src_paper, src_orient) if (src_paper and src_orient) else norm_rects
             if not active_rects:
-                print(f"[TemplateMulti] No rectangles match the source layout for {src_pdf}; skipping this group.")
                 continue
 
-            # 2c) Extract ONCE per PDF with all of its rectangles together (critical for correctness/perf)
-            try:
-                cnt, used, skipped = extract_zones_content(src_pdf, active_rects, _return_skips=True)
-            except Exception as e:
-                print(f"[TemplateMulti] Extraction failed for {src_pdf}: {e}")
-                continue
-
-            # 2d) Accumulate and tag provenance
+            cnt, used, skipped = extract_zones_content(src_pdf, active_rects, _return_skips=True)
             contents.extend(cnt)
             for u in used:
                 u["source_index"] = fidx
@@ -294,46 +328,41 @@ class TemplateManager:
             used_rects.extend(used)
             skipped_total += len(skipped)
 
-            if skipped:
-                print(f"[TemplateMulti] {len(skipped)} rectangle(s) skipped (OOB/invalid) for {src_pdf}.")
-
-        # ---- 3) Persist unified profile ----
         if not contents:
             raise ValueError("No valid rectangles after processing all source PDFs; nothing to save.")
 
         profile = {
-            "rectangles": used_rects,          # as-drawn (top-left origin), page is 0-based here (from extractor)
-            "contents": contents,              # transformed bbox + text + image_hash per rect
+            "rectangles": used_rects,
+            "contents": contents,
             "image_map": image_map or {},
-            # Optional for audit/debug; uncomment if you want to store the full mapping:
-            # "sources": {str(i): p for i, p in index_to_path.items()}
         }
-        path = self._resolve_profile_path(template_id, for_write=True)
-        with open(path, "w") as f:
-            json.dump(profile, f, indent=2)
+        # local + remote
+        self._save_profile_local(template_id, profile)
+        self._save_profile_remote(template_id, profile)
 
         if skipped_total:
-            print(f"[TemplateMulti] Warning: {skipped_total} rectangle(s) skipped across sources while saving '{template_id}'.")
+            print(f"[TemplateMulti] {skipped_total} rectangle(s) skipped during save for '{template_id}'.")
 
     def load_profile(self, template_id: str) -> dict:
         """
-        Load saved profile JSON. First try versioned path. If missing, fall back to legacy flat path.
+        Try Supabase first; fall back to local file paths.
         """
+        remote = self._load_profile_remote(template_id)
+        if remote is not None:
+            return remote
+
         path_v = self._resolve_profile_path(template_id, for_write=False)
         if os.path.exists(path_v):
-            with open(path_v, 'r') as f:
+            with open(path_v, "r", encoding="utf-8") as f:
                 return json.load(f)
 
-        # fallback to legacy flat path
+        # legacy flat path fallback
         path_legacy = os.path.join(self.store_dir, f"{template_id}.json")
         if os.path.exists(path_legacy):
-            with open(path_legacy, 'r') as f:
+            with open(path_legacy, "r", encoding="utf-8") as f:
                 return json.load(f)
 
-        raise FileNotFoundError(
-            f"Template profile not found for '{template_id}'. "
-            f"Checked: {path_v} and {path_legacy}"
-        )
+        raise FileNotFoundError(f"Template profile not found for '{template_id}'.")
 
 
 
