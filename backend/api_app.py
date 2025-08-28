@@ -40,7 +40,7 @@ _SB_KEY  = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KE
 _SB_BUCKET = os.getenv("SUPABASE_BUCKET", "pdf-sanitization")
 _SB_OUT_PREFIX = os.getenv("SUPABASE_OUTPUTS_PREFIX", "sanitized").rstrip("/")
 _SB_TPL_PREFIX = os.getenv("SUPABASE_TEMPLATES_PREFIX", "templates").rstrip("/")
-
+_SB_LOGOS_PREFIX = os.getenv("SUPABASE_LOGOS_PREFIX", "logos").rstrip("/")
 
 _sb = create_client(_SB_URL, _SB_KEY) if (create_client and _SB_URL and _SB_KEY) else None
 
@@ -263,4 +263,32 @@ async def list_clients():
     root.mkdir(parents=True, exist_ok=True)
     clients = sorted([p.name for p in root.iterdir() if p.is_dir()])
     return {"clients": clients}
+
+
+@app.post("/api/upload-logo")
+async def upload_logo(file: UploadFile = File(...)):
+    """
+    Upload a single company logo and return the storage key to use in image_map.
+    Stored at: logos/<filename>
+    """
+    filename = file.filename
+    data = file.file.read()
+
+    if _sb:
+        key = f"{_SB_LOGOS_PREFIX}/{filename}"
+        _sb.storage.from_(_SB_BUCKET).upload(
+            key, data, {"contentType": file.content_type or "image/png", "upsert": True}
+        )
+        return {"key": key}
+
+    # Local fallback
+    local_dir = os.path.join("assets", "logos")
+    os.makedirs(local_dir, exist_ok=True)
+    local_path = os.path.join(local_dir, filename)
+    with open(local_path, "wb") as f:
+        f.write(data)
+    # Return a "key-like" path that your pipeline resolver will treat as local
+    return {"key": f"logos/{filename}"}
+
+
 
