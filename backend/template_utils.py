@@ -214,7 +214,7 @@ class TemplateManager:
             return
         data = json.dumps(profile, ensure_ascii=False).encode("utf-8")
         self.sb.storage.from_(self.bucket).upload(
-            key, data, {"contentType": "application/json", "upsert": True}
+            key, data, {"contentType": "application/json", "upsert":"true"}
         )
 
     def _load_profile_remote(self, template_id: str) -> Optional[dict]:
