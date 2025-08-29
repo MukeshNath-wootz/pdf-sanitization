@@ -61,7 +61,7 @@ def _sb_upload_and_sign(local_path: str, client: str, job_id: str) -> str | None
         remote_path = f"{_SB_OUT_PREFIX}/{client}/{job_id}/{key_name}"
         with open(local_path, "rb") as f:
             _sb.storage.from_(_SB_BUCKET).upload(
-                remote_path, f, {"contentType": "application/pdf", "upsert": True}
+                remote_path, f, {"contentType": "application/pdf", "upsert": "true"}
             )
         # Try public first (if bucket is public)
         try:
@@ -278,7 +278,7 @@ async def upload_logo(file: UploadFile = File(...)):
     if _sb:
         key = f"{_SB_LOGOS_PREFIX}/{filename}"
         _sb.storage.from_(_SB_BUCKET).upload(
-            key, data, {"contentType": file.content_type or "image/png", "upsert": True}
+            key, data, {"contentType": file.content_type or "image/png", "upsert": "true"}
         )
         return {"key": key}
 
