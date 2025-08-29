@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 // Backend base URL (set Vercel env: VITE_API_BASE=https://<your-render>.onrender.com)
-const API_BASE =
-   (typeof import !== "undefined" && typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE
-     ? import.meta.env.VITE_API_BASE
-     : process.env.REACT_APP_API_BASE || ""
-   ).replace(/\/+$/, "");
+const _viteBase = (typeof import !== "undefined" && typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE)
+  ? import.meta.env.VITE_API_BASE
+  : "";
+const _craBase = (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE)
+  ? process.env.REACT_APP_API_BASE
+  : "";
+
+const API_BASE = String(_viteBase || _craBase || "").replace(/\/+$/, "");
+
 /* ================== Inline Icon Components ================== */
 function IconUploadCloud(props){return(<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" {...props}><path d="M3 15a4 4 0 0 0 4 4h10a5 5 0 0 0 0-10 7 7 0 0 0-13 2" /><path d="M12 12v9" /><path d="m16 16-4-4-4 4" /></svg>);}
 function IconX(props){return(<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" {...props}><path d="M18 6 6 18" /><path d="M6 6l12 12" /></svg>);}
