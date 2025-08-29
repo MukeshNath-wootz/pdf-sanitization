@@ -126,7 +126,7 @@ def process_batch(
             "text can be in any language, but mostly English."
         )
         # 0.3) call the LLM helper
-        new_terms = get_sensitive_terms_from_llm(deduped_text, context)
+        # new_terms = get_sensitive_terms_from_llm(deduped_text, context)
         print("new_terms:", new_terms)
         # 0.4) merge with your existing manual list—no duplicates
         existing_manual_names = manual_names[:] if manual_names is not None else []
