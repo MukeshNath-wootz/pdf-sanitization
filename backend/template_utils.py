@@ -284,7 +284,7 @@ class TemplateManager:
         contents: List[dict] = []
         skipped_total = 0
 
-        # group by source index
+        # ---- 1) Group rectangles by source PDF index ----
         grouped: Dict[int, List[dict]] = {}
         for r in rectangles or []:
             fidx = int(r.get("file_idx", 0))
@@ -293,12 +293,14 @@ class TemplateManager:
         if not grouped:
             raise ValueError("No rectangles were provided for multi-PDF save.")
 
+        # ---- 2) Process each source PDF exactly once ----
         for fidx, rects_for_pdf in grouped.items():
             src_pdf = index_to_path.get(fidx)
             if not src_pdf or not os.path.exists(src_pdf):
+                print(f"[TemplateMulti] Missing/invalid source for file_idx={fidx}; skipping group.")
                 continue
 
-            # normalize rects
+             # 2a) Normalize rects: ensure 0-based page, normalized bbox, preserve paper/orientation
             norm_rects: List[dict] = []
             for r in rects_for_pdf:
                 pg = int(r.get("page", 0) or 0)
@@ -310,31 +312,50 @@ class TemplateManager:
                 if "orientation" in r: nr["orientation"] = r["orientation"]
                 norm_rects.append(nr)
 
-            # filter by THIS source PDF's layout
+            # 2b) Detect the SOURCE PDF layout and filter to matching rectangles
             try:
                 src_paper, src_orient, _ = _classify_pdf_layout(src_pdf)
+                print(f"[TemplateMulti] Source={src_pdf} layout paper={src_paper}, orientation={src_orient}")
             except Exception:
+                print(f"[TemplateMulti] Could not classify layout for {src_pdf}: {e}")
                 src_paper, src_orient = None, None
 
-            active_rects = _filter_rectangles_for_layout(norm_rects, src_paper, src_orient) if (src_paper and src_orient) else norm_rects
+            if src_paper and src_orient:
+                active_rects = _filter_rectangles_for_layout(norm_rects, src_paper, src_orient)
+            else:
+                # If layout detection fails, use all rects for this source as a fallback.
+                active_rects = norm_rects
+
             if not active_rects:
+                print(f"[TemplateMulti] No rectangles match the source layout for {src_pdf}; skipping this group.")
                 continue
 
-            cnt, used, skipped = extract_zones_content(src_pdf, active_rects, _return_skips=True)
+            # 2c) Extract ONCE per PDF with all of its rectangles together (critical for correctness/perf)
+            try:
+                cnt, used, skipped = extract_zones_content(src_pdf, active_rects, _return_skips=True)
+            except Exception as e:
+                print(f"[TemplateMulti] Extraction failed for {src_pdf}: {e}")
+                continue
+            # ---- 3) Persist unified profile ----    
             contents.extend(cnt)
             for u in used:
                 u["source_index"] = fidx
                 u["source_pdf"] = os.path.basename(src_pdf)
             used_rects.extend(used)
             skipped_total += len(skipped)
+            
+            if skipped:
+                print(f"[TemplateMulti] {len(skipped)} rectangle(s) skipped (OOB/invalid) for {src_pdf}.")
 
         if not contents:
             raise ValueError("No valid rectangles after processing all source PDFs; nothing to save.")
 
         profile = {
-            "rectangles": used_rects,
-            "contents": contents,
+            "rectangles": used_rects,          # as-drawn (top-left origin), page is 0-based here (from extractor)
+            "contents": contents,              # transformed bbox + text + image_hash per rect
             "image_map": image_map or {},
+            # Optional for audit/debug; uncomment if you want to store the full mapping:
+            # "sources": {str(i): p for i, p in index_to_path.items()}
         }
         # local + remote
         self._save_profile_local(template_id, profile)
