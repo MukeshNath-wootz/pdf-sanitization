@@ -271,9 +271,22 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
 
     const res = await fetch(`${API_BASE}/api/sanitize`, { method: "POST", body: form });
     if (!res.ok) { alert("Backend error while sanitizing."); return; }
-    const payload = await res.json();
+    const contentType = res.headers.get("content-type") || "";
 
-    // Optional: show which template id was created, e.g., acme_v1
+    if (contentType.includes("application/zip")) {
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = "sanitized_pdfs.zip"; // You can customize the name if needed
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+      return;
+    }
+    // Optional: show which template id was created, e.g., acme_v1 (fallback for older JSON-based response)
+    const payload = await res.json();
     if (payload.template_id) {
       console.log("Saved template:", payload.template_id);
     }
