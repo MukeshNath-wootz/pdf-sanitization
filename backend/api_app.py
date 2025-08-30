@@ -1,5 +1,5 @@
 # api_app.py
-import os, shutil, tempfile, json, uuid
+import os, shutil, tempfile, zipfile, json, uuid
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, Form, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +30,14 @@ async def root():
 STATIC_DIR = os.path.abspath("output_sanitized")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+def zip_sanitized_pdfs(pdf_paths: list[str], output_dir: str, zip_name: str) -> str:
+    zip_path = os.path.join(output_dir, zip_name)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for path in pdf_paths:
+            arcname = os.path.basename(path)
+            zipf.write(path, arcname=arcname)
+    return zip_path
+    
 def _safe_client_id(s: str) -> str:
     s = (s or "").strip().lower().replace(" ", "_")
     return "".join(ch for ch in s if ch.isalnum() or ch in "_-") or "template"
@@ -135,27 +143,26 @@ async def sanitize(
         image_map=img_map,
     )
 
-    # 6) build output links (Supabase preferred, fallback to local download)
-    job_id = uuid.uuid4().hex
-    outs = []
+        # 6) zip sanitized PDFs
+    sanitized_paths = []
     for p in paths:
         base = os.path.splitext(os.path.basename(p))[0]
         fn = f"{base}_sanitized.pdf"
-        local_out = os.path.join(STATIC_DIR, fn)
+        sanitized_path = os.path.join(STATIC_DIR, fn)
+        sanitized_paths.append(sanitized_path)
 
-        public_url = _sb_upload_and_sign(local_out, client=client, job_id=job_id)
-        if public_url:
-            outs.append({"name": fn, "url": public_url})
-        else:
-            outs.append({"name": fn, "url": f"/api/download/{fn}"})
+    zip_filename = f"{client}_sanitized_pdfs.zip"
+    zip_path = zip_sanitized_pdfs(sanitized_paths, STATIC_DIR, zip_filename)
 
-    return {
-        "success": True,
-        "outputs": outs,
-        "template_id": template_id,
-        "client": client,
-        "low_conf": low_conf,
-    }
+    # Optional cleanup of individual PDFs
+    # for f in sanitized_paths:
+    #     try:
+    #         os.remove(f)
+    #     except Exception:
+    #         pass
+
+    return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+
 
 
 @app.post("/api/sanitize-existing")
