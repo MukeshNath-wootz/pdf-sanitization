@@ -428,6 +428,11 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
                                     setRectActions(prev=>({...prev,[r.id]:{ action:"logo", logoFile:null, logoKey:undefined }}));
                                     return;
                                   }
+                                  const maxKB = 100;
+                                  if (f.size / 1024 > maxKB) {
+                                    alert(`Please upload a logo smaller than ${maxKB} KB.`);
+                                    return;
+                                  }
                                   // 1) upload to backend -> returns { key: "logos/<filename>" }
                                   const fd = new FormData();
                                   fd.append("file", f);
