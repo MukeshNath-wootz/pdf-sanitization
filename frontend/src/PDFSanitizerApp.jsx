@@ -278,7 +278,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = downloadUrl;
-      a.download = "sanitized_pdfs.zip"; // You can customize the name if needed
+      a.download = `${clientName}_sanitized_pdfs.zip`; // You can customize the name if needed
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -533,6 +533,21 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
 
     const res = await fetch(`${API_BASE}/api/sanitize-existing`, { method: "POST", body: form });
     if (!res.ok) { alert("Backend error while sanitizing."); return; }
+    const contentType = res.headers.get("content-type") || "";
+
+    if (contentType.includes("application/zip")) {
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `${clientName}_sanitized_pdfs.zip`; // You can customize the name if needed
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+      return;
+    }
+    // Optional: show which template id was created, e.g., acme_v1 (fallback for older JSON-based response)
     const payload = await res.json();
 
     if (payload.template_id) console.log("Using template:", payload.template_id);
