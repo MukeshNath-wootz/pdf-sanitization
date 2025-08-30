@@ -30,6 +30,25 @@ async def root():
 STATIC_DIR = os.path.abspath("output_sanitized")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+import time
+
+def delete_old_zips(folder: str, hours: int = 12):
+    """
+    Deletes ZIP files in `folder` older than `hours`.
+    """
+    now = time.time()
+    cutoff = now - hours * 3600
+
+    for file in os.listdir(folder):
+        if file.endswith(".zip"):
+            path = os.path.join(folder, file)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    print(f"[Cleanup] Deleted old zip: {file}")
+            except Exception as e:
+                print(f"[Cleanup Error] Could not delete {file}: {e}")
+
 def zip_sanitized_pdfs(pdf_paths: list[str], output_dir: str, zip_name: str) -> str:
     zip_path = os.path.join(output_dir, zip_name)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -143,7 +162,9 @@ async def sanitize(
         image_map=img_map,
     )
 
-    # 6) zip sanitized PDFs
+    # 6) — Clean up old ZIPs first
+    delete_old_zips(STATIC_DIR, hours=1)
+    # 7) zip sanitized PDFs
     sanitized_paths = []
     for p in paths:
         base = os.path.splitext(os.path.basename(p))[0]
@@ -235,7 +256,9 @@ async def sanitize_existing(
         image_map=image_map,
     )
 
-    # 6) zip sanitized PDFs
+    # 6) — Clean up old ZIPs first
+    delete_old_zips(STATIC_DIR, hours=1)
+    # 7) zip sanitized PDFs
     sanitized_paths = []
     for p in paths:
         base = os.path.splitext(os.path.basename(p))[0]
