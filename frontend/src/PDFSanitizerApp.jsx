@@ -103,14 +103,34 @@ function SearchableClientDropdown({ value, onChange, options }) {
 }
 
 /* ================== New Client Setup Page (2-step UI) ================== */
-function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
+function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = false,  secondaryLowConf = [], onProceedSecondary, onRemoveSecondaryAt,}) {
   const [activeIndex,setActiveIndex]=useState(0);
   const [rects,setRects]=useState([]);                 // {id,x,y,w,h} normalized
   const [rectActions,setRectActions]=useState({});      // id -> { action: 'redact'|'logo', logoFile?: File }
   const [draft,setDraft]=useState(null);                // {x,y,w,h} in px while drawing
   const [renderError,setRenderError]=useState("");
   const [templateFileIdx, setTemplateFileIdx] = useState(null);
+  const [pageIndex, setPageIndex] = useState(0);   // 0-based current page
+  const [pageCount, setPageCount] = useState(1);   // total pages (set after pdf load)
+  // ---- Secondary flow states (top-level) ----
+  const [secondaryMode, setSecondaryMode] = useState(false);          // global flag
+  const [lastLowConf, setLastLowConf] = useState([]);                 // array of { pdf, low_rects }
+  const [lastZipUrl, setLastZipUrl] = useState("");                   // download URL provided by API
+  const [secondaryFiles, setSecondaryFiles] = useState([]);           // preloaded sanitized PDFs for secondary
+  const [secondaryClient, setSecondaryClient] = useState("");         // client to re-use
+  function removeSecondaryAt(index) {
+   setSecondaryFiles(prev => {
+     const next = prev.slice();
+     next.splice(index, 1);
+     // if emptied, exit secondary mode
+     if (next.length === 0) {
+       setSecondaryMode(false);
+     }
+     return next;
+   });
+ }
 
+ 
   // Step 2 inputs
   const [step,setStep]=useState(1);                     // 1: rectangles; 2: text+run
   const [eraseRaw,setEraseRaw]=useState("");
@@ -119,6 +139,48 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
   const replParsed=useMemo(()=>parseReplacementMap(replRaw),[replRaw]);
   const [threshold,setThreshold]=useState(0.9);
   const [pageMeta, setPageMeta] = useState(null);
+  
+  async function autoLoadSecondaryFromLowConf(lowConf, client) {
+   const targets = (lowConf || []).map(it => {
+     const base = (it.pdf || "").split(/[\\/]/).pop() || "";
+     return `${base.replace(/\\.pdf$/i, "")}_sanitized.pdf`;
+   });
+ 
+   const fetched = [];
+   for (const name of targets) {
+     try {
+       const url = `${API_BASE}/api/download/${encodeURIComponent(name)}`;
+       const resp = await fetch(url);
+       if (!resp.ok) continue;
+       const blob = await resp.blob();
+       fetched.push(new File([blob], name, { type: "application/pdf" }));
+     } catch (e) {
+       console.warn("Failed to fetch sanitized file:", name, e);
+     }
+   }
+ 
+   if (fetched.length) {
+     // Switch entire app into secondary mode
+     setSecondaryMode(true);
+     setSecondaryFiles(fetched);
+     setSecondaryClient(client);
+     // Preserve the same low-conf map for quick-jumps
+     setLastLowConf(lowConf);
+   } else {
+     alert("Could not auto-load low-confidence PDFs.");
+   }
+ }
+
+ const lowPagesForActive = React.useMemo(() => {
+    if (!secondaryMode || !secondaryLowConf?.length) return [];
+    const currentName = pdfFiles?.[activeIndex]?.name || "";
+    if (!currentName) return [];
+    // secondary uses sanitized files; low_conf stores original names → normalize
+    const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
+    const hit = secondaryLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
+    if (!hit) return [];
+    return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
+  }, [secondaryMode, secondaryLowConf, pdfFiles, activeIndex]);
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
@@ -129,7 +191,14 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
     async function render(){setRenderError(""); const canvas=pdfCanvasRef.current; if(!canvas||!file) return;
       try{
         await ensurePdfJs(); const data=await file.arrayBuffer();
-        const task=window.pdfjsLib.getDocument({data}); const pdf=await task.promise; const page=await pdf.getPage(1);
+        const task=window.pdfjsLib.getDocument({data}); 
+        const pdf=await task.promise; 
+        const total = pdf.numPages || pdf._pdfInfo?.numPages || 1;
+        setPageCount(total);
+
+        // Clamp index
+        const pno = Math.min(Math.max(0, pageIndex), total - 1);
+        const page = await pdf.getPage(pno + 1);
         // const viewport=page.getViewport({scale:1}); 
         // const width=wrapRef.current?wrapRef.current.clientWidth:800;
         // const scale=width/viewport.width; 
@@ -145,7 +214,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
         }
 
         const meta = {
-          pageNo: 0, // first page
+          pageNo: pno,
           width: Math.floor(vp.width),
           height: Math.floor(vp.height),
           sizeClass: classifySize(vp.width, vp.height),
@@ -169,7 +238,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
       }catch(err){console.error(err); setRenderError("Failed to render PDF first page.");}
     }
     render(); return()=>{cancelled=true;};
-  },[file]);
+  },[file, pageIndex]);
 
   // Draw overlay (rects + draft)
   useEffect(()=>{const overlay=overlayRef.current; if(!overlay) return; const ctx=overlay.getContext("2d");
@@ -269,6 +338,25 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
     form.append("client_name", clientName); // ← NEW: tell API which name to save the template under
     // form.append("template_source_index", String(templateFileIdx ?? activeIndex));
 
+    // Request JSON so we can read low_conf and show an on-demand Download ZIP button
+    const res = await fetch(`${API_BASE}/api/sanitize`, {
+      method: "POST",
+      headers: { "Accept": "application/json" },
+      body: form
+    });
+    if (!res.ok) { alert("Backend error while sanitizing."); return; }
+    const payload = await res.json();
+    
+    // Persist low_conf / zip_url for secondary and download UX
+    const lowConf = Array.isArray(payload.low_conf) ? payload.low_conf : [];
+    setLastLowConf(lowConf);
+    setLastZipUrl(payload.zip_url || "");
+    setSecondaryClient(clientName);
+    
+    // Optionally: surface outputs list somewhere (you previously opened a popup);
+    // now you can render a button that uses payload.zip_url to download any time.
+
+     // previously for auto zip download 
     const res = await fetch(`${API_BASE}/api/sanitize`, { method: "POST", body: form });
     if (!res.ok) { alert("Backend error while sanitizing."); return; }
     const contentType = res.headers.get("content-type") || "";
@@ -316,6 +404,68 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Page navigation */}
+          <div className="mb-2 flex items-center gap-2 text-sm">
+            <button type="button"
+              onClick={()=>setPageIndex(p=>Math.max(0, p-1))}
+              className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+              disabled={pageIndex<=0}
+            >← Prev</button>
+            <div className="text-neutral-400">
+              Page {pageIndex+1} / {_pageCount}
+            </div>
+            <button type="button"
+              onClick={()=>setPageIndex(p=>Math.min(_pageCount-1, p+1))}
+              className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+              disabled={pageIndex>=_pageCount-1}
+            >Next →</button>
+          </div>
+          
+          {/* Quick-jump chips (secondary mode only) */}
+          {secondaryMode && secondaryLowConf && secondaryLowConf.length>0 && (() => {
+            const currentBase = (file?.name || "").replace(/_sanitized\\.pdf$/i, ".pdf");
+            const entry = secondaryLowConf.find(it => (it.pdf||"").endsWith(currentBase));
+            const pages = entry ? Object.keys(entry.low_rects||{}) : [];
+            return pages.length ? (
+              <div className="mb-3 flex flex-wrap gap-2 text-xs">
+                <span className="text-neutral-400">Jump to low-confidence pages:</span>
+                {pages.map(p0 => (
+                  <button key={p0} type="button"
+                    onClick={()=>setPageIndex(Number(p0))}
+                    className="rounded-full border border-amber-600/60 px-2 py-0.5 hover:bg-amber-900/30"
+                    title="Go to page"
+                  >
+                    {Number(p0)+1}
+                  </button>
+                ))}
+              </div>
+            ) : null;
+          })()}
+          
+          {/* Remove current PDF from batch */}
+          {secondaryMode && (
+            <div className="mb-2">
+              <button type="button"
+                onClick={()=>{
+                  const copy = [...pdfFiles];
+                  copy.splice(activeIndex,1);
+                  if (copy.length===0) {
+                    // exit secondary if nothing left
+                    setSecondaryMode(false);
+                    setSecondaryFiles([]);
+                  } else {
+                    // adjust active index & files
+                    setSecondaryFiles(copy);
+                    setActiveIndex(i => Math.min(i, copy.length-1));
+                  }
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-rose-700/70 px-2 py-1 text-xs hover:bg-rose-900/30"
+              >
+                <IconTrash2 /> Remove this PDF
+              </button>
+            </div>
+          )}
+
           {/* LEFT: PDF Viewer */}
           <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4">
             <div className="mb-3 flex items-center justify-between">
@@ -503,6 +653,45 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
                             className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500">
                       <IconCheck /> Run Sanitization
                     </button>
+                   {(lastZipUrl || (secondaryLowConf && secondaryLowConf.length>0)) && (
+                     <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
+                       {lastZipUrl && (
+                         <a
+                           href={lastZipUrl} target="_blank" rel="noreferrer"
+                           className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
+                         >
+                           Download ZIP
+                         </a>
+                       )}
+                       {(secondaryLowConf && secondaryLowConf.length>0) && (
+                         <button
+                           type="button"
+                           className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
+                           onClick={() => autoLoadSecondaryFromLowConf(secondaryLowConf, clientName)}
+                         >
+                           Proceed with secondary process batch
+                         </button>
+                       )}
+                   
+                       {(secondaryLowConf && secondaryLowConf.length>0) && (
+                         <div className="mt-3 text-xs text-neutral-400">
+                           <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
+                           <ul className="list-disc pl-5 space-y-1">
+                             {secondaryLowConf.map((it, idx) => {
+                               const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
+                               const pages = Object.keys(it.low_rects || {}).map(n => Number(n)+1);
+                               return (
+                                 <li key={idx}>
+                                   <span className="text-neutral-200">{base}</span>
+                                   {pages.length ? ` — pages: ${pages.join(", ")}` : ""}
+                                 </li>
+                               );
+                             })}
+                           </ul>
+                         </div>
+                       )}
+                     </div>
+                   )}
                   </div>
                 </div>
               </div>
@@ -697,9 +886,13 @@ export default function App() {
   if(stage==="newClient"){
     return (
       <NewClientSetupPage 
-        pdfFiles={files} 
-        clientName={clientChoice==="new"?newClientName.trim():clientChoice} 
-        onBack={()=>setStage("home")} 
+        pdfFiles={secondaryMode ? secondaryFiles : files}
+        clientName={secondaryMode ? secondaryClient : (clientChoice==="new" ? newClientName.trim() : clientChoice)}
+        onBack={() => { setStage("home"); setSecondaryMode(false); }}
+        secondaryMode={secondaryMode}
+        secondaryLowConf={lastLowConf}
+        onProceedSecondary={autoLoadSecondaryFromLowConf}
+        onRemoveSecondaryAt={removeSecondaryAt}
       />
     );
   }
