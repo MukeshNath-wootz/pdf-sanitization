@@ -357,22 +357,22 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
     // now you can render a button that uses payload.zip_url to download any time.
 
      // previously for auto zip download 
-    const res = await fetch(`${API_BASE}/api/sanitize`, { method: "POST", body: form });
-    if (!res.ok) { alert("Backend error while sanitizing."); return; }
-    const contentType = res.headers.get("content-type") || "";
+    // const res = await fetch(`${API_BASE}/api/sanitize`, { method: "POST", body: form });
+    // if (!res.ok) { alert("Backend error while sanitizing."); return; }
+    // const contentType = res.headers.get("content-type") || "";
 
-    if (contentType.includes("application/zip")) {
-      const blob = await res.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = `${clientName}_sanitized_pdfs.zip`; // You can customize the name if needed
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(downloadUrl);
-      return;
-    }
+    // if (contentType.includes("application/zip")) {
+    //   const blob = await res.blob();
+    //   const downloadUrl = window.URL.createObjectURL(blob);
+    //   const a = document.createElement("a");
+    //   a.href = downloadUrl;
+    //   a.download = `${clientName}_sanitized_pdfs.zip`; // You can customize the name if needed
+    //   document.body.appendChild(a);
+    //   a.click();
+    //   a.remove();
+    //   window.URL.revokeObjectURL(downloadUrl);
+    //   return;
+    // }
     // Optional: show which template id was created, e.g., acme_v1 (fallback for older JSON-based response)
     const payload = await res.json();
     if (payload.template_id) {
