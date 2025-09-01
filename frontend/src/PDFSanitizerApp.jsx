@@ -374,7 +374,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
     //   return;
     // }
     // Optional: show which template id was created, e.g., acme_v1 (fallback for older JSON-based response)
-    const payload = await res.json();
+    // const payload = await res.json();
     if (payload.template_id) {
       console.log("Saved template:", payload.template_id);
     }
