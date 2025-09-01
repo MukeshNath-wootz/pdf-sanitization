@@ -113,7 +113,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
   const [pageIndex, setPageIndex] = useState(0);   // 0-based current page
   const [pageCount, setPageCount] = useState(1);   // total pages (set after pdf load)
   // ---- Secondary flow states (top-level) ----
-  const [secondaryMode, setSecondaryMode] = useState(false);          // global flag
+  const [isSecondaryMode, setIsSecondaryMode] = useState(false);         // global flag
   const [lastLowConf, setLastLowConf] = useState([]);                 // array of { pdf, low_rects }
   const [lastZipUrl, setLastZipUrl] = useState("");                   // download URL provided by API
   const [secondaryFiles, setSecondaryFiles] = useState([]);           // preloaded sanitized PDFs for secondary
@@ -888,8 +888,8 @@ export default function App() {
       <NewClientSetupPage 
         pdfFiles={secondaryMode ? secondaryFiles : files}
         clientName={secondaryMode ? secondaryClient : (clientChoice==="new" ? newClientName.trim() : clientChoice)}
-        onBack={() => { setStage("home"); setSecondaryMode(false); }}
-        secondaryMode={secondaryMode}
+        onBack={() => { setStage("home"); setIsSecondaryMode(false); }}
+        secondaryMode={isSecondaryMode}
         secondaryLowConf={lastLowConf}
         onProceedSecondary={autoLoadSecondaryFromLowConf}
         onRemoveSecondaryAt={removeSecondaryAt}
