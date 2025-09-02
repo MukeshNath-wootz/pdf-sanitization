@@ -103,7 +103,7 @@ function SearchableClientDropdown({ value, onChange, options }) {
 }
 
 /* ================== New Client Setup Page (2-step UI) ================== */
-function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = false,  secondaryLowConf = [], onProceedSecondary, onRemoveSecondaryAt,}) {
+function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
   const [activeIndex,setActiveIndex]=useState(0);
   const [rects,setRects]=useState([]);                 // {id,x,y,w,h} normalized
   const [rectActions,setRectActions]=useState({});      // id -> { action: 'redact'|'logo', logoFile?: File }
@@ -141,10 +141,10 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
   const [pageMeta, setPageMeta] = useState(null);
   
   async function autoLoadSecondaryFromLowConf(lowConf, client) {
-   const targets = (lowConf || []).map(it => {
-     const base = (it.pdf || "").split(/[\\/]/).pop() || "";
-     return `${base.replace(/\\.pdf$/i, "")}_sanitized.pdf`;
-   });
+  const targets = (lowConf || []).map(it => {
+    const base = (it.pdf || "").split(/[\\/]/).pop() || "";
+    return `${base.replace(/\.pdf$/i, "")}_sanitized.pdf`;
+  });
  
    const fetched = [];
    for (const name of targets) {
@@ -161,7 +161,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
  
    if (fetched.length) {
      // Switch entire app into secondary mode
-     setSecondaryMode(true);
+     setIsSecondaryMode(true);
      setSecondaryFiles(fetched);
      setSecondaryClient(client);
      // Preserve the same low-conf map for quick-jumps
@@ -184,7 +184,8 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
-  const file=pdfFiles[activeIndex];
+  const currentFiles = isSecondaryMode ? secondaryFiles : pdfFiles;
+  const file = currentFiles[activeIndex];
 
   // Render first page to canvas
   useEffect(()=>{let cancelled=false;
@@ -301,12 +302,12 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
 
   // Build payload + call backend
   async function runSanitization() {
-    if (!pdfFiles.length) { alert("Please add at least one PDF."); return; }
+    if (!curretFiles.length) { alert("Please add at least one PDF."); return; }
     // Build zones for ALL rects (multi-PDF template)
     const template_zones = [];
     const image_map = {};                        // index-aligned with template_zones
     const form = new FormData();
-    pdfFiles.forEach(f => form.append("files", f));
+    currentFiles.forEach(f => form.append("files", f));
 
     rects.forEach((r) => {
       // 0-based page number everywhere
@@ -412,51 +413,53 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
               disabled={pageIndex<=0}
             >← Prev</button>
             <div className="text-neutral-400">
-              Page {pageIndex+1} / {_pageCount}
+              Page {pageIndex+1} / {pageCount}
             </div>
             <button type="button"
-              onClick={()=>setPageIndex(p=>Math.min(_pageCount-1, p+1))}
+              onClick={()=>setPageIndex(p=>Math.min(pageCount-1, p+1))}
               className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
-              disabled={pageIndex>=_pageCount-1}
+              disabled={pageIndex>=pageCount-1}
             >Next →</button>
           </div>
           
           {/* Quick-jump chips (secondary mode only) */}
-          {secondaryMode && secondaryLowConf && secondaryLowConf.length>0 && (() => {
-            const currentBase = (file?.name || "").replace(/_sanitized\\.pdf$/i, ".pdf");
-            const entry = secondaryLowConf.find(it => (it.pdf||"").endsWith(currentBase));
-            const pages = entry ? Object.keys(entry.low_rects||{}) : [];
+          {isSecondaryMode && lastLowConf && lastLowConf.length > 0 && (() => {
+            const currentBase = (file?.name || "").replace(/_sanitized\.pdf$/i, ".pdf");
+            const entry = lastLowConf.find(it => (it.pdf || "").endsWith(currentBase));
+            const pages = entry ? Object.keys(entry.low_rects || {}) : [];
             return pages.length ? (
               <div className="mb-3 flex flex-wrap gap-2 text-xs">
                 <span className="text-neutral-400">Jump to low-confidence pages:</span>
                 {pages.map(p0 => (
-                  <button key={p0} type="button"
-                    onClick={()=>setPageIndex(Number(p0))}
+                  <button
+                    key={p0}
+                    type="button"
+                    onClick={() => setPageIndex(Number(p0))}
                     className="rounded-full border border-amber-600/60 px-2 py-0.5 hover:bg-amber-900/30"
                     title="Go to page"
                   >
-                    {Number(p0)+1}
+                    {Number(p0) + 1}
                   </button>
                 ))}
               </div>
             ) : null;
           })()}
+
           
           {/* Remove current PDF from batch */}
-          {secondaryMode && (
+          {isSecondaryMode && (
             <div className="mb-2">
-              <button type="button"
-                onClick={()=>{
-                  const copy = [...pdfFiles];
-                  copy.splice(activeIndex,1);
-                  if (copy.length===0) {
-                    // exit secondary if nothing left
-                    setSecondaryMode(false);
+              <button
+                type="button"
+                onClick={() => {
+                  const copy = [...secondaryFiles];
+                  copy.splice(activeIndex, 1);
+                  if (copy.length === 0) {
+                    setIsSecondaryMode(false);
                     setSecondaryFiles([]);
                   } else {
-                    // adjust active index & files
                     setSecondaryFiles(copy);
-                    setActiveIndex(i => Math.min(i, copy.length-1));
+                    setActiveIndex(i => Math.min(i, copy.length - 1));
                   }
                 }}
                 className="inline-flex items-center gap-1 rounded-md border border-rose-700/70 px-2 py-1 text-xs hover:bg-rose-900/30"
@@ -465,6 +468,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
               </button>
             </div>
           )}
+
 
           {/* LEFT: PDF Viewer */}
           <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4">
@@ -476,7 +480,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
             </div>
 
             <div className="flex gap-2 mb-3 overflow-auto">
-              {pdfFiles.map((f,i)=>(
+              {currentFiles.map((f,i)=>(
                 <button key={`${f.name}-${i}`} className={`text-xs rounded-lg border px-2 py-1 ${i===activeIndex?"border-emerald-600 bg-emerald-600 text-white":"border-neutral-700 bg-neutral-800 text-neutral-300 hover:bg-neutral-750"}`}
                         onClick={()=>setActiveIndex(i)} type="button">
                   {f.name}{templateFileIdx===i ? "  • template" : ""}
@@ -653,33 +657,36 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
                             className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500">
                       <IconCheck /> Run Sanitization
                     </button>
-                   {(lastZipUrl || (secondaryLowConf && secondaryLowConf.length>0)) && (
+                   {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
                      <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
                        {lastZipUrl && (
                          <a
-                           href={lastZipUrl} target="_blank" rel="noreferrer"
+                           href={lastZipUrl}
+                           target="_blank"
+                           rel="noreferrer"
                            className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
                          >
                            Download ZIP
                          </a>
                        )}
-                       {(secondaryLowConf && secondaryLowConf.length>0) && (
+                   
+                       {lastLowConf && lastLowConf.length > 0 && (
                          <button
                            type="button"
                            className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
-                           onClick={() => autoLoadSecondaryFromLowConf(secondaryLowConf, clientName)}
+                           onClick={() => autoLoadSecondaryFromLowConf(lastLowConf, clientName)}
                          >
                            Proceed with secondary process batch
                          </button>
                        )}
                    
-                       {(secondaryLowConf && secondaryLowConf.length>0) && (
+                       {lastLowConf && lastLowConf.length > 0 && (
                          <div className="mt-3 text-xs text-neutral-400">
                            <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
                            <ul className="list-disc pl-5 space-y-1">
-                             {secondaryLowConf.map((it, idx) => {
+                             {lastLowConf.map((it, idx) => {
                                const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
-                               const pages = Object.keys(it.low_rects || {}).map(n => Number(n)+1);
+                               const pages = Object.keys(it.low_rects || {}).map(n => Number(n) + 1);
                                return (
                                  <li key={idx}>
                                    <span className="text-neutral-200">{base}</span>
@@ -692,6 +699,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, secondaryMode = fals
                        )}
                      </div>
                    )}
+
                   </div>
                 </div>
               </div>
@@ -886,13 +894,9 @@ export default function App() {
   if(stage==="newClient"){
     return (
       <NewClientSetupPage 
-        pdfFiles={secondaryMode ? secondaryFiles : files}
-        clientName={secondaryMode ? secondaryClient : (clientChoice==="new" ? newClientName.trim() : clientChoice)}
-        onBack={() => { setStage("home"); setIsSecondaryMode(false); }}
-        secondaryMode={isSecondaryMode}
-        secondaryLowConf={lastLowConf}
-        onProceedSecondary={autoLoadSecondaryFromLowConf}
-        onRemoveSecondaryAt={removeSecondaryAt}
+        pdfFiles={files}
+        clientName={clientChoice === "new" ? newClientName.trim() : clientChoice}
+        onBack={() => setStage("home")}
       />
     );
   }
