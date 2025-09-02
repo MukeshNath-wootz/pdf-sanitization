@@ -437,21 +437,32 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
               ))}
             </div>
             {/* Page navigation */}
-            <div className="mb-2 flex items-center gap-2 text-sm">
-              <button type="button"
-                onClick={()=>setPageIndex(p=>Math.max(0, p-1))}
-                className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
-                disabled={pageIndex<=0}
-              >← Prev</button>
-              <div className="text-neutral-400">
-                Page {pageIndex+1} / {pageCount}
+            <div className="mb-2 flex justify-center text-sm">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPageIndex(p => Math.max(0, p - 1))}
+                  className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+                  disabled={pageIndex <= 0}
+                >
+                  ← Prev
+                </button>
+            
+                <span className="text-neutral-400">
+                  Page {pageIndex + 1} / {pageCount}
+                </span>
+            
+                <button
+                  type="button"
+                  onClick={() => setPageIndex(p => Math.min(pageCount - 1, p + 1))}
+                  className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+                  disabled={pageIndex >= pageCount - 1}
+                >
+                  Next →
+                </button>
               </div>
-              <button type="button"
-                onClick={()=>setPageIndex(p=>Math.min(pageCount-1, p+1))}
-                className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
-                disabled={pageIndex>=pageCount-1}
-              >Next →</button>
             </div>
+
             
             {/* Quick-jump chips (secondary mode only) */}
             {isSecondaryMode && lastLowConf && lastLowConf.length > 0 && (() => {
