@@ -124,7 +124,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
      next.splice(index, 1);
      // if emptied, exit secondary mode
      if (next.length === 0) {
-       setSecondaryMode(false);
+       setIsSecondaryMode(false);
      }
      return next;
    });
@@ -172,15 +172,15 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
  }
 
  const lowPagesForActive = React.useMemo(() => {
-    if (!secondaryMode || !secondaryLowConf?.length) return [];
+    if (!isSecondaryMode || !lastLowConf?.length) return [];
     const currentName = pdfFiles?.[activeIndex]?.name || "";
     if (!currentName) return [];
     // secondary uses sanitized files; low_conf stores original names → normalize
     const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
-    const hit = secondaryLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
+    const hit = lastLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
     if (!hit) return [];
     return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
-  }, [secondaryMode, secondaryLowConf, pdfFiles, activeIndex]);
+  }, [isSecondaryMode, lastLowConf, pdfFiles, activeIndex]);
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
@@ -302,7 +302,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
 
   // Build payload + call backend
   async function runSanitization() {
-    if (!curretFiles.length) { alert("Please add at least one PDF."); return; }
+    if (!currentFiles.length) { alert("Please add at least one PDF."); return; }
     // Build zones for ALL rects (multi-PDF template)
     const template_zones = [];
     const image_map = {};                        // index-aligned with template_zones
