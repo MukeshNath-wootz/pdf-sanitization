@@ -196,21 +196,21 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
 
  }
 
- const lowPagesForActive = React.useMemo(() => {
-   if (!isSecondaryMode || !lastLowConf?.length) return [];
-   const currentName = currentFiles?.[activeIndex]?.name || "";
-   if (!currentName) return [];
-   const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
-   const hit = lastLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
-   if (!hit) return [];
-   return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
- }, [isSecondaryMode, lastLowConf, currentFiles, activeIndex]);
-
+  const currentFiles = isSecondaryMode ? secondaryFiles : pdfFiles;
+  const file = currentFiles[activeIndex];
+ 
+  const lowPagesForActive = React.useMemo(() => {
+    if (!isSecondaryMode || !lastLowConf?.length) return [];
+    const currentName = currentFiles?.[activeIndex]?.name || "";
+    if (!currentName) return [];
+    const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
+    const hit = lastLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
+    if (!hit) return [];
+    return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
+  }, [isSecondaryMode, lastLowConf, currentFiles, activeIndex]);
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
-  const currentFiles = isSecondaryMode ? secondaryFiles : pdfFiles;
-  const file = currentFiles[activeIndex];
 
   // Render first page to canvas
   useEffect(()=>{let cancelled=false;
