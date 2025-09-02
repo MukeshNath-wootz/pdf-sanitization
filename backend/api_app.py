@@ -179,8 +179,8 @@ async def sanitize(
         template_id=template_id,
         output_dir=STATIC_DIR,
         threshold=threshold,
-        manual_names=manual_names,
-        text_replacements=manual_rep_data,
+        manual_names=names,
+        text_replacements=replacements,
         image_map=img_map,
         input_root=None,
         secondary=secondary,   # <-- skip LLM/manual/replacements when True
@@ -301,9 +301,9 @@ async def sanitize_existing(
         template_id=template_id,
         output_dir=STATIC_DIR,
         threshold=threshold,
-        manual_names=manual_names,
-        text_replacements=manual_rep_data,
-        image_map=img_map,
+        manual_names=names,
+        text_replacements=replacements,
+        image_map=image_map,
         input_root=None,
         secondary=secondary,
     )
