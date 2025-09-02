@@ -337,6 +337,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
     form.append("image_map", JSON.stringify(image_map));
     form.append("threshold", String(threshold));
     form.append("client_name", clientName); // ← NEW: tell API which name to save the template under
+    form.append("secondary", isSecondaryMode ? "true" : "false");
     // form.append("template_source_index", String(templateFileIdx ?? activeIndex));
 
     // Request JSON so we can read low_conf and show an on-demand Download ZIP button
