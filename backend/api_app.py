@@ -32,7 +32,7 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 
 import time
 
-def delete_old_zips(folder: str, hours: int = 12):
+def delete_old_zips(folder: str, hours: int = 1):
     """
     Deletes ZIP files in `folder` older than `hours`.
     """
