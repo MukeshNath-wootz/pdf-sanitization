@@ -1,7 +1,7 @@
 # api_app.py
 import os, shutil, tempfile, zipfile, json, uuid
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, Form, File
+from fastapi import FastAPI, UploadFile, Form, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -61,6 +61,26 @@ def _safe_client_id(s: str) -> str:
     s = (s or "").strip().lower().replace(" ", "_")
     return "".join(ch for ch in s if ch.isalnum() or ch in "_-") or "template"
 
+def zip_append_with_versions(zip_path: str, file_paths: list[str]) -> str:
+    """
+    Append files into an existing ZIP or create it if not present.
+    If a file's arcname already exists, append _2, _3, ... to its arcname.
+    """
+    mode = "a" if os.path.exists(zip_path) else "w"
+    with zipfile.ZipFile(zip_path, mode, zipfile.ZIP_DEFLATED) as z:
+        existing = set(z.namelist())
+        for fp in file_paths:
+            base = os.path.basename(fp)
+            name, ext = os.path.splitext(base)
+            arc = base
+            idx = 2
+            while arc in existing:
+                arc = f"{name}_{idx}{ext}"
+                idx += 1
+            z.write(fp, arcname=arc)
+            existing.add(arc)
+    return zip_path
+
 # ---------- Optional Supabase outputs/templates/logos ----------
 try:
     from supabase import create_client  # type: ignore
@@ -106,6 +126,7 @@ def _sb_upload_and_sign(local_path: str, client: str, job_id: str) -> str | None
 
 @app.post("/api/sanitize")
 async def sanitize(
+    request: Request,
     files: list[UploadFile] = File(...),
     template_zones: str = Form(...),
     manual_names: str = Form(default="[]"),
@@ -113,6 +134,7 @@ async def sanitize(
     image_map: str = Form("{}"),  # JSON: {tidx: "logos/<filename>"}
     threshold: float = Form(default=0.9),
     client_name: str = Form(...),
+    secondary: bool = Form(default=False),
 ):
     # 1) persist uploads to a temp folder
     tmp_input = tempfile.mkdtemp(prefix="in_")
@@ -157,10 +179,13 @@ async def sanitize(
         template_id=template_id,
         output_dir=STATIC_DIR,
         threshold=threshold,
-        manual_names=names,
-        text_replacements=replacements,
+        manual_names=manual_names,
+        text_replacements=manual_rep_data,
         image_map=img_map,
+        input_root=None,
+        secondary=secondary,   # <-- skip LLM/manual/replacements when True
     )
+
 
     # 6) — Clean up old ZIPs first
     delete_old_zips(STATIC_DIR, hours=1)
@@ -173,7 +198,9 @@ async def sanitize(
         sanitized_paths.append(sanitized_path)
 
     zip_filename = f"{client}_sanitized_pdfs.zip"
-    zip_path = zip_sanitized_pdfs(sanitized_paths, STATIC_DIR, zip_filename)
+    zip_path = os.path.join(STATIC_DIR, zip_filename)
+    zip_append_with_versions(zip_path, sanitized_paths)
+
 
     # Optional cleanup of individual PDFs
     # for f in sanitized_paths:
@@ -181,8 +208,29 @@ async def sanitize(
     #         os.remove(f)
     #     except Exception:
     #         pass
+    accept = (request.headers.get("accept") or "").lower()
+    zip_url = f"/api/download/{os.path.basename(zip_path)}"
+    
+    if os.path.exists(zip_path) and "application/json" in accept:
+        # Success path: return JSON (no Supabase; local URLs only)
+        outs = []
+        for p in paths:
+            base = os.path.splitext(os.path.basename(p))[0]
+            fn = f"{base}_sanitized.pdf"
+            outs.append({"name": fn, "url": f"/api/download/{fn}"})
+        return {
+            "success": True,
+            "outputs": outs,
+            "zip_url": zip_url,
+            "template_id": template_id,
+            "client": client,
+            "low_conf": low_conf,
+        }
+    
+    # Legacy / default: send the ZIP directly (unchanged for non-JSON callers)
     if os.path.exists(zip_path):
         return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+
 
     # Fallback: return JSON with URLs if ZIP creation failed
     job_id = uuid.uuid4().hex
@@ -210,11 +258,13 @@ async def sanitize(
 
 @app.post("/api/sanitize-existing")
 async def sanitize_existing(
+    request: Request,
     files: list[UploadFile] = File(...),
     manual_names: str = Form(default="[]"),
     text_replacements: str = Form(default="{}"),
     threshold: float = Form(default=0.9),
     client_name: str = Form(...),
+    secondary: bool = Form(default=False),
 ):
     tm = TemplateManager()
     client = _safe_client_id(client_name)
@@ -251,9 +301,11 @@ async def sanitize_existing(
         template_id=template_id,
         output_dir=STATIC_DIR,
         threshold=threshold,
-        manual_names=names,
-        text_replacements=replacements,
-        image_map=image_map,
+        manual_names=manual_names,
+        text_replacements=manual_rep_data,
+        image_map=img_map,
+        input_root=None,
+        secondary=secondary,
     )
 
     # 6) — Clean up old ZIPs first
@@ -267,7 +319,9 @@ async def sanitize_existing(
         sanitized_paths.append(sanitized_path)
 
     zip_filename = f"{client}_sanitized_pdfs.zip"
-    zip_path = zip_sanitized_pdfs(sanitized_paths, STATIC_DIR, zip_filename)
+    zip_path = os.path.join(STATIC_DIR, zip_filename)
+    zip_append_with_versions(zip_path, sanitized_paths)
+
 
     # Optional cleanup of individual PDFs
     # for f in sanitized_paths:
@@ -275,8 +329,27 @@ async def sanitize_existing(
     #         os.remove(f)
     #     except Exception:
     #         pass
+    accept = (request.headers.get("accept") or "").lower()
+    zip_url = f"/api/download/{os.path.basename(zip_path)}"
+    
+    if os.path.exists(zip_path) and "application/json" in accept:
+        outs = []
+        for p in paths:
+            base = os.path.splitext(os.path.basename(p))[0]
+            fn = f"{base}_sanitized.pdf"
+            outs.append({"name": fn, "url": f"/api/download/{fn}"})
+        return {
+            "success": True,
+            "outputs": outs,
+            "zip_url": zip_url,
+            "template_id": template_id,
+            "client": client,
+            "low_conf": low_conf,
+        }
+    
     if os.path.exists(zip_path):
         return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+
 
     # fallback
     job_id = uuid.uuid4().hex
@@ -306,7 +379,9 @@ async def download_file(filename: str):
     file_path = os.path.join(STATIC_DIR, filename)
     if not os.path.exists(file_path):
         return JSONResponse({"error": "File not found"}, status_code=404)
-    return FileResponse(file_path, filename=filename, media_type="application/pdf")
+    media = "application/zip" if filename.lower().endswith(".zip") else "application/pdf"
+    return FileResponse(file_path, filename=filename, media_type=media)
+
 
 
 @app.get("/api/clients")
