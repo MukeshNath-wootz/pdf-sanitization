@@ -66,6 +66,7 @@ def process_batch(
     text_replacements: dict[str, str] | None = None,
     image_map: dict[int, str] | None = None,
     input_root: str | None = None,
+    secondary: bool = False,
 ) -> list[dict]:
     """
     For each PDF:
@@ -112,28 +113,30 @@ def process_batch(
         else:
             sanitized = os.path.join(output_dir, f"{base}_sanitized.pdf")
 
-    # ── Step 0: AUTO-EXTRACT sensitive terms via LLM…
-        # 0.1) first, get ALL text from this PDF:
-        all_text = extract_raw_text(pdf)
-        deduped_text = dedupe_text_pages(all_text)
+        # ── Step 0: AUTO-EXTRACT sensitive terms via LLM (skip in secondary) ──
+        if not secondary:
+            # 0.1) first, get ALL text from this PDF:
+            all_text = extract_raw_text(pdf)
+            deduped_text = dedupe_text_pages(all_text)
+        
+            # 0.2) write context to LLM
+            context = (
+                "These texts come from engineering/manufacturing drawings "
+                "for machine parts. Non-sensitive info includes part names, "
+                "dimensions, machining processes and steps, safety notes and notes regarding any manufacturing steps. Sensitive info includes "
+                "personal names, emails, phone/fax numbers, postal addresses, country names, and Copyright notes."
+                "text can be in any language, but mostly English."
+            )
+            # 0.3) call the LLM helper
+            new_terms = get_sensitive_terms_from_llm(deduped_text, context)
+            print("new_terms:", new_terms)
+            # 0.4) merge with your existing manual list—no duplicates
+            existing_manual_names = manual_names[:] if manual_names is not None else []
+            manual_names = existing_manual_names[:]  # copy
+            for term in new_terms:
+                if term not in manual_names:
+                    manual_names.append(term)
 
-        # 0.2) write context to LLM
-        context = (
-            "These texts come from engineering/manufacturing drawings "
-            "for machine parts. Non-sensitive info includes part names, "
-            "dimensions, machining processes and steps, safety notes and notes regarding any manufacturing steps. Sensitive info includes "
-            "personal names, emails, phone/fax numbers, postal addresses, country names, and Copyright notes."
-            "text can be in any language, but mostly English."
-        )
-        # 0.3) call the LLM helper
-        new_terms = get_sensitive_terms_from_llm(deduped_text, context)
-        print("new_terms:", new_terms)
-        # 0.4) merge with your existing manual list—no duplicates
-        existing_manual_names = manual_names[:] if manual_names is not None else []
-        manual_names = existing_manual_names[:]  # copy
-        for term in new_terms:
-            if term not in manual_names:
-                manual_names.append(term)
 
 
     # ── Step 1: Determine page count & replicate template zones ──
@@ -247,7 +250,7 @@ def process_batch(
         THRESH_I  = 0.9 * threshold
 
         high_conf_rects = []
-        low_confidence_by_page = {}
+        low_confidence_by_page = defaultdict(list)
 
         for pg, recs in pages.items():
             # page_low = False
@@ -256,7 +259,7 @@ def process_batch(
                     or rec["tscore"] < THRESH_T
                     or rec["iscore"] < THRESH_I):
                     # mark that particular template rectangle as low-conf
-                    low_confidence_by_page[pg] = rec["bbox"]
+                    low_confidence_by_page[pg].append(rec["bbox"])
                 else:
                     # this rectangle is high-confidence
                     high_conf_rects.append({
@@ -279,11 +282,14 @@ def process_batch(
         doc.close()
 
     # ── Step 3: Collect manual-name redaction rectangles + replacement info ──
-        manual_rects, manual_rep_data = collect_manual_replacements(
-            pdf,
-            manual_names or [],
-            text_replacements or {}
-        )
+        if not secondary:
+            manual_rects, manual_rep_data = collect_manual_replacements(
+                pdf,
+                manual_names or [],
+                text_replacements or {}
+            )
+        else:
+            manual_rects, manual_rep_data = [], {}
         # print(f"Found {len(manual_rects)} manual redaction zones in {pdf}")
         # print(f"These are the rectangles corresponding to the manual names: {manual_rects}")
         # print(f"Found {len(manual_rep_data)} manual replacements in {pdf}")
@@ -355,15 +361,17 @@ def process_batch(
                     image_map  = enum_image_map            # remapped to local enumeration
                 )
 
-    # ── Step 7: Overlay allowed manual replacements ──
-        apply_manual_replacements(sanitized, manual_rep_data, replicated_rectangles)
+    # ── Step 7: Overlay allowed manual replacements (skip in secondary) ──
+        if not secondary:
+            apply_manual_replacements(sanitized, manual_rep_data, replicated_rectangles)
         
         if low_confidence_by_page:
-            print(f"Low-confidence rectangles found in {pdf}: {low_confidence_by_page}")
+            print(f"Low-confidence rectangles found in {pdf}: {dict(low_confidence_by_page)}")
             low_conf.append({
                 "pdf": pdf,
-                "low_rects": low_confidence_by_page
+                "low_rects": dict(low_confidence_by_page)
             })
+
 
 
     return low_conf
