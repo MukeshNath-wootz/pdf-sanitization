@@ -71,6 +71,27 @@ function buildImageMapForTest(rects, actions){
   return imageMap;
 }
 
+function absApiUrl(path) {
+  const base = (API_BASE || "").replace(/\/+$/,"");
+  const p = String(path || "");
+  if (!base) return p;                 // dev proxy case
+  return p.startsWith("/") ? `${base}${p}` : `${base}/${p}`;
+}
+
+async function downloadFile(url, suggestedName) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
+  const blob = await resp.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = suggestedName || "download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+}
+
+
 /* ================== Demo clients ================== */
 // const EXISTING_CLIENTS = ["Acme Manufacturing","Barfee Engineering","Client A","Client B"];
 
@@ -160,27 +181,31 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
    }
  
    if (fetched.length) {
-     // Switch entire app into secondary mode
      setIsSecondaryMode(true);
      setSecondaryFiles(fetched);
      setSecondaryClient(client);
-     // Preserve the same low-conf map for quick-jumps
      setLastLowConf(lowConf);
+   
+     // 🔑 ensure the UI actually shows the new batch from the start
+     setActiveIndex(0);
+     setPageIndex(0);
+     setStep(1);
    } else {
      alert("Could not auto-load low-confidence PDFs.");
    }
+
  }
 
  const lowPagesForActive = React.useMemo(() => {
-    if (!isSecondaryMode || !lastLowConf?.length) return [];
-    const currentName = pdfFiles?.[activeIndex]?.name || "";
-    if (!currentName) return [];
-    // secondary uses sanitized files; low_conf stores original names → normalize
-    const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
-    const hit = lastLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
-    if (!hit) return [];
-    return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
-  }, [isSecondaryMode, lastLowConf, pdfFiles, activeIndex]);
+   if (!isSecondaryMode || !lastLowConf?.length) return [];
+   const currentName = currentFiles?.[activeIndex]?.name || "";
+   if (!currentName) return [];
+   const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
+   const hit = lastLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
+   if (!hit) return [];
+   return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
+ }, [isSecondaryMode, lastLowConf, currentFiles, activeIndex]);
+
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
@@ -352,7 +377,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
     // Persist low_conf / zip_url for secondary and download UX
     const lowConf = Array.isArray(payload.low_conf) ? payload.low_conf : [];
     setLastLowConf(lowConf);
-    setLastZipUrl(payload.zip_url || "");
+    setLastZipUrl(payload.zip_url ? absApiUrl(payload.zip_url) : "");
     setSecondaryClient(clientName);
     
     // Optionally: surface outputs list somewhere (you previously opened a popup);
@@ -683,15 +708,24 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
                    {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
                      <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
                        {lastZipUrl && (
-                         <a
-                           href={lastZipUrl}
-                           target="_blank"
-                           rel="noreferrer"
+                         <button
+                           type="button"
                            className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
+                           onClick={async () => {
+                             try {
+                               // make the URL absolute so it hits the API, not your SPA
+                               const url = absApiUrl(lastZipUrl);
+                               await downloadFile(lastZipUrl, `${clientName}_sanitized_pdfs.zip`);
+                             } catch (e) {
+                               alert("Could not download the ZIP. See console for details.");
+                               console.error(e);
+                             }
+                           }}
                          >
                            Download ZIP
-                         </a>
+                         </button>
                        )}
+
                    
                        {lastLowConf && lastLowConf.length > 0 && (
                          <button
