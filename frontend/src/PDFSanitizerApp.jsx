@@ -406,71 +406,6 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Page navigation */}
-          <div className="mb-2 flex items-center gap-2 text-sm">
-            <button type="button"
-              onClick={()=>setPageIndex(p=>Math.max(0, p-1))}
-              className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
-              disabled={pageIndex<=0}
-            >← Prev</button>
-            <div className="text-neutral-400">
-              Page {pageIndex+1} / {pageCount}
-            </div>
-            <button type="button"
-              onClick={()=>setPageIndex(p=>Math.min(pageCount-1, p+1))}
-              className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
-              disabled={pageIndex>=pageCount-1}
-            >Next →</button>
-          </div>
-          
-          {/* Quick-jump chips (secondary mode only) */}
-          {isSecondaryMode && lastLowConf && lastLowConf.length > 0 && (() => {
-            const currentBase = (file?.name || "").replace(/_sanitized\.pdf$/i, ".pdf");
-            const entry = lastLowConf.find(it => (it.pdf || "").endsWith(currentBase));
-            const pages = entry ? Object.keys(entry.low_rects || {}) : [];
-            return pages.length ? (
-              <div className="mb-3 flex flex-wrap gap-2 text-xs">
-                <span className="text-neutral-400">Jump to low-confidence pages:</span>
-                {pages.map(p0 => (
-                  <button
-                    key={p0}
-                    type="button"
-                    onClick={() => setPageIndex(Number(p0))}
-                    className="rounded-full border border-amber-600/60 px-2 py-0.5 hover:bg-amber-900/30"
-                    title="Go to page"
-                  >
-                    {Number(p0) + 1}
-                  </button>
-                ))}
-              </div>
-            ) : null;
-          })()}
-
-          
-          {/* Remove current PDF from batch */}
-          {isSecondaryMode && (
-            <div className="mb-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const copy = [...secondaryFiles];
-                  copy.splice(activeIndex, 1);
-                  if (copy.length === 0) {
-                    setIsSecondaryMode(false);
-                    setSecondaryFiles([]);
-                  } else {
-                    setSecondaryFiles(copy);
-                    setActiveIndex(i => Math.min(i, copy.length - 1));
-                  }
-                }}
-                className="inline-flex items-center gap-1 rounded-md border border-rose-700/70 px-2 py-1 text-xs hover:bg-rose-900/30"
-              >
-                <IconTrash2 /> Remove this PDF
-              </button>
-            </div>
-          )}
-
-
           {/* LEFT: PDF Viewer */}
           <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4">
             <div className="mb-3 flex items-center justify-between">
@@ -481,13 +416,89 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
             </div>
 
             <div className="flex gap-2 mb-3 overflow-auto">
-              {currentFiles.map((f,i)=>(
-                <button key={`${f.name}-${i}`} className={`text-xs rounded-lg border px-2 py-1 ${i===activeIndex?"border-emerald-600 bg-emerald-600 text-white":"border-neutral-700 bg-neutral-800 text-neutral-300 hover:bg-neutral-750"}`}
-                        onClick={()=>setActiveIndex(i)} type="button">
-                  {f.name}{templateFileIdx===i ? "  • template" : ""}
-                </button>
+              {currentFiles
+                .map((f, i) => ({ f, i }))       // pair file with original index
+                .filter(({ f }) => f.name.toLowerCase().endsWith(".pdf"))
+                .slice(0, 8) //top 8 pdfs only
+                .map(({ f, i }) => (
+                  <button
+                    key={`${f.name}-${i}`}
+                    className={`text-xs rounded-lg border px-2 py-1 ${
+                      i === activeIndex
+                        ? "border-emerald-600 bg-emerald-600 text-white"
+                        : "border-neutral-700 bg-neutral-800 text-neutral-300 hover:bg-neutral-750"
+                    }`}
+                    onClick={() => setActiveIndex(i)}
+                    type="button"
+                  >
+                    {f.name}
+                    {templateFileIdx === i ? "  • template" : ""}
+                  </button>
               ))}
             </div>
+            {/* Page navigation */}
+            <div className="mb-2 flex items-center gap-2 text-sm">
+              <button type="button"
+                onClick={()=>setPageIndex(p=>Math.max(0, p-1))}
+                className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+                disabled={pageIndex<=0}
+              >← Prev</button>
+              <div className="text-neutral-400">
+                Page {pageIndex+1} / {pageCount}
+              </div>
+              <button type="button"
+                onClick={()=>setPageIndex(p=>Math.min(pageCount-1, p+1))}
+                className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+                disabled={pageIndex>=pageCount-1}
+              >Next →</button>
+            </div>
+            
+            {/* Quick-jump chips (secondary mode only) */}
+            {isSecondaryMode && lastLowConf && lastLowConf.length > 0 && (() => {
+              const currentBase = (file?.name || "").replace(/_sanitized\.pdf$/i, ".pdf");
+              const entry = lastLowConf.find(it => (it.pdf || "").endsWith(currentBase));
+              const pages = entry ? Object.keys(entry.low_rects || {}) : [];
+              return pages.length ? (
+                <div className="mb-3 flex flex-wrap gap-2 text-xs">
+                  <span className="text-neutral-400">Jump to low-confidence pages:</span>
+                  {pages.map(p0 => (
+                    <button
+                      key={p0}
+                      type="button"
+                      onClick={() => setPageIndex(Number(p0))}
+                      className="rounded-full border border-amber-600/60 px-2 py-0.5 hover:bg-amber-900/30"
+                      title="Go to page"
+                    >
+                      {Number(p0) + 1}
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })()}
+  
+            
+            {/* Remove current PDF from batch */}
+            {isSecondaryMode && (
+              <div className="mb-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const copy = [...secondaryFiles];
+                    copy.splice(activeIndex, 1);
+                    if (copy.length === 0) {
+                      setIsSecondaryMode(false);
+                      setSecondaryFiles([]);
+                    } else {
+                      setSecondaryFiles(copy);
+                      setActiveIndex(i => Math.min(i, copy.length - 1));
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-rose-700/70 px-2 py-1 text-xs hover:bg-rose-900/30"
+                >
+                  <IconTrash2 /> Remove this PDF
+                </button>
+              </div>
+            )}
 
             {/* Wrapper MUST be positioning context for overlay; also force position via style to avoid CSS framework issues */}
             <div ref={wrapRef} className="relative w-full overflow-auto" style={{ position: "relative" }}>
