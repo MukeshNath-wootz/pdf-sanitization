@@ -493,7 +493,14 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
             {isSecondaryMode && lastLowConf && lastLowConf.length > 0 && (() => {
               const currentBase = (file?.name || "").replace(/_sanitized\.pdf$/i, ".pdf");
               const entry = lastLowConf.find(it => (it.pdf || "").endsWith(currentBase));
-              const pages = entry ? Object.keys(entry.low_rects || {}) : [];
+              const pages = entry
+                ? Object.entries(entry.low_rects || {})
+                    // accept both new shape (array of bboxes) and old (single bbox)
+                    .filter(([_, v]) => (Array.isArray(v) ? v.length > 0 : !!v))
+                    .map(([k]) => Number(k))
+                    .sort((a, b) => a - b)
+                : [];
+
               return pages.length ? (
                 <div className="mb-3 flex flex-wrap gap-2 text-xs">
                   <span className="text-neutral-400">Jump to low-confidence pages:</span>
