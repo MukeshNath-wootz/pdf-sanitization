@@ -412,7 +412,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
               <div className="text-sm text-neutral-300">
                 Preview: <span className="text-neutral-100 font-medium">{file ? file.name : "No file"}</span>
               </div>
-              <div className="flex items-center gap-2"><IconEye className="text-neutral-400" /><span className="text-xs text-neutral-400">Showing first page</span></div>
+              <div className="flex items-center gap-2"><IconEye className="text-neutral-400" /><span className="text-xs text-neutral-400">Showing PDFs to draw rectangles</span></div>
             </div>
 
             <div className="flex gap-2 mb-3 overflow-auto">
