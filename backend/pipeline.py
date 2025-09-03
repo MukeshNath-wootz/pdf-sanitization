@@ -154,6 +154,11 @@ def process_batch(
             if r in filtered:
                 rr = dict(r)  # shallow copy
                 rr["tidx"] = i  # original template index
+                # group id based on the source source idx (fallback to pdf name)
+                gid = f"idx:{r.get('source_index', 0)}"
+                if not gid:
+                    gid = r.get("source_pdf")
+                rr["group_id"] = gid
                 active_rectangles.append(rr)
         print(f"[Layout] Active rectangles for {pdf}: {len(active_rectangles)} found")
         print(f"[Layout] Active rectangles for {pdf}: {active_rectangles}")
@@ -179,10 +184,11 @@ def process_batch(
         doc.close()
 
         replicated_rectangles = [
-            {"page": i, "bbox": r["bbox"], "tidx": r["tidx"]}
+            {"page": i, "bbox": r["bbox"], "tidx": r["tidx"], "group_id": r.get("group_id")}
             for i in range(num_pages)
             for r in active_rectangles
         ]
+
         for rect in replicated_rectangles:
             print(f"page: {rect['page']}, bbox: {rect['bbox']}, tidx: {rect['tidx']}")
 
@@ -191,7 +197,7 @@ def process_batch(
             p0 = rr["page"]
             pr, pw, ph = rot_meta[p0]
             tb = transform_bbox_for_rotation(rr["bbox"], pw, ph, pr)
-            replicated_rectangles_rotaware.append({"page": rr["page"], "bbox": tb, "tidx": rr["tidx"]})
+            replicated_rectangles_rotaware.append({"page": rr["page"], "bbox": tb, "tidx": rr["tidx"], "group_id": rr.get("group_id")})
 
         # oob_issues = _validate_replicated_rects_for_pdf(
         #     pdf_path=pdf,
@@ -239,7 +245,8 @@ def process_batch(
                 "tidx": ti,          # keep it!
                 "tscore": tscore,
                 "iscore": iscore,
-                "rscore": rscore
+                "rscore": rscore,
+                "group_id": rect.get("group_id"),
             })
 
         # 2.1) group scores by page
@@ -256,18 +263,47 @@ def process_batch(
         low_confidence_by_page = defaultdict(list)
 
         for pg, recs in pages.items():
-            # page_low = False
+            # split this page’s rects into groups
+            groups = defaultdict(list)
             for rec in recs:
-                if (rec["iscore"] < THRESH_I):
-                    # mark that particular template rectangle as low-conf
-                    low_confidence_by_page[pg].append(rec["bbox"])
-                else:
-                    # this rectangle is high-confidence
+                gid = rec.get("group_id")
+                groups[gid].append(rec)
+        
+            # compute pass/fail per group, and keep worst rscore and failing recs
+            group_pass = {}
+            group_worst = {}
+            group_fail_rects = {}
+        
+            for gid, lst in groups.items():
+                fails = []
+                min_r = 1.0
+                for rec in lst:
+                    bad = (rec["iscore"] < THRESH_I)
+                    if bad:
+                        fails.append(rec)
+                    if rec["rscore"] < min_r:
+                        min_r = rec["rscore"]
+                group_pass[gid] = (len(fails) == 0)
+                group_worst[gid] = min_r
+                if fails:
+                    group_fail_rects[gid] = fails
+        
+            # if any group passes, accept that group's rects for this page
+            passing = [gid for gid, ok in group_pass.items() if ok]
+            if passing:
+                chosen = passing[0]   # or choose best by group_worst/avg if you prefer
+                for rec in groups[chosen]:
                     high_conf_rects.append({
                         "page": rec["page"],
                         "bbox": rec["bbox"],
-                        "tidx": rec["tidx"]
+                        "tidx": rec["tidx"],
                     })
+                continue
+        
+            # otherwise all groups failed; pick the worst group (lowest min rscore)
+            worst_gid = min(group_worst, key=lambda g: group_worst[g])
+            for rec in group_fail_rects.get(worst_gid, []):
+                low_confidence_by_page[int(pg)].append(rec["bbox"])
             
         # transform high-conf rects for redaction
         doc = fitz.open(pdf)
