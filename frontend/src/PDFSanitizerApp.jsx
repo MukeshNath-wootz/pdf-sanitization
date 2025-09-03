@@ -295,7 +295,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
   const onPointerUp=e=>{if(!drawingRef.current) return; e.preventDefault(); drawingRef.current=false;
     overlayRef.current.releasePointerCapture?.(e.pointerId);
     if(!draft||draft.w<4||draft.h<4){setDraft(null);setConfirmUI(null);return;}
-    setConfirmUI({left:draft.x+draft.w+8, top:draft.y+draft.h+8});};
+    setConfirmUI({left:draft.x+draft.w, top:draft.y+draft.h});};
 
   const confirmDraft=()=>{
     if (!overlayRef.current || !draft) return;
@@ -420,7 +420,19 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
 
   // ------- UI -------
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100">
+     <main
+       className="min-h-screen text-neutral-100"
+       style={{
+         backgroundColor: "#0a0a0a",
+         backgroundImage: `
+           radial-gradient(1200px 600px at 20% 10%, rgba(16,185,129,0.07), transparent 60%),
+           radial-gradient(900px 500px at 85% 85%, rgba(59,130,246,0.06), transparent 60%),
+           url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><path d="M28 0H0v1h28V0zm0 27H0v1h28v-1zM0 0h1v28H0V0zm27 0h1v28h-1V0z" fill="rgba(255,255,255,0.03)"/></svg>')
+         `,
+         backgroundRepeat: "no-repeat, no-repeat, repeat",
+         backgroundSize: "auto, auto, 28px 28px",
+       }}
+     >
       <div className="mx-auto max-w-7xl px-4 py-6">
         <header className="mb-4 flex items-center gap-3">
           <button className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800" onClick={onBack} type="button">
@@ -556,7 +568,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
               />
               {confirmUI&&draft&&(
                 <div className="absolute z-20 rounded-xl border border-neutral-700 bg-neutral-900 text-sm shadow-md"
-                     style={{left:confirmUI.left, top:confirmUI.top}}>
+                     style={{left:confirmUI.left, top:confirmUI.top, transform: "translate(8px, 8px)"}}>
                   <div className="flex">
                     <button type="button" className="px-3 py-1.5 hover:bg-neutral-800 border-r border-neutral-800 inline-flex items-center gap-1" onClick={confirmDraft}><IconCheck />Confirm</button>
                     <button type="button" className="px-3 py-1.5 hover:bg-neutral-800 inline-flex items-center gap-1" onClick={cancelDraft}><IconX />Cancel</button>
@@ -831,7 +843,19 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
   }
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100">
+     <main
+      className="min-h-screen text-neutral-100"
+      style={{
+        backgroundColor: "#0a0a0a",
+        backgroundImage: `
+          radial-gradient(1200px 600px at 20% 10%, rgba(16,185,129,0.07), transparent 60%),
+          radial-gradient(900px 500px at 85% 85%, rgba(59,130,246,0.06), transparent 60%),
+          url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><path d="M28 0H0v1h28V0zm0 27H0v1h28v-1zM0 0h1v28H0V0zm27 0h1v28h-1V0z" fill="rgba(255,255,255,0.03)"/></svg>')
+        `,
+        backgroundRepeat: "no-repeat, no-repeat, repeat",
+        backgroundSize: "auto, auto, 28px 28px",
+      }}
+    >
       <div className="mx-auto max-w-4xl px-4 py-6">
         <header className="mb-4 flex items-center gap-3">
           <button className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800" onClick={onBack} type="button">
@@ -976,7 +1000,20 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100">
+    <main
+      className="min-h-screen text-neutral-100"
+      style={{
+        backgroundColor: "#0a0a0a",
+        backgroundImage: `
+          radial-gradient(1200px 600px at 20% 10%, rgba(16,185,129,0.07), transparent 60%),
+          radial-gradient(900px 500px at 85% 85%, rgba(59,130,246,0.06), transparent 60%),
+          url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28"><path d="M28 0H0v1h28V0zm0 27H0v1h28v-1zM0 0h1v28H0V0zm27 0h1v28h-1V0z" fill="rgba(255,255,255,0.03)"/></svg>')
+        `,
+        backgroundRepeat: "no-repeat, no-repeat, repeat",
+        backgroundSize: "auto, auto, 28px 28px",
+      }}
+    >
+
       <div className="mx-auto max-w-4xl px-4 py-10">
         <header className="mb-8">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Wootz.Sanitize</h1>
