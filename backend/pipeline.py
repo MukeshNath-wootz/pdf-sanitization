@@ -128,7 +128,10 @@ def process_batch(
                 "text can be in any language, but mostly English."
             )
             # 0.3) call the LLM helper
-            new_terms = get_sensitive_terms_from_llm(deduped_text, context)
+            if deduped_text:  # checks if not empty
+                new_terms = get_sensitive_terms_from_llm(deduped_text, context)
+            else:
+                new_terms = []
             print("new_terms:", new_terms)
             # 0.4) merge with your existing manual list—no duplicates
             existing_manual_names = manual_names[:] if manual_names is not None else []
@@ -247,7 +250,7 @@ def process_batch(
         # 2.2) per-page high/low classification
         THRESH_R  = threshold
         THRESH_T  = 0.9 * threshold
-        THRESH_I  = 0.9 * threshold
+        THRESH_I  = threshold
 
         high_conf_rects = []
         low_confidence_by_page = defaultdict(list)
@@ -255,9 +258,7 @@ def process_batch(
         for pg, recs in pages.items():
             # page_low = False
             for rec in recs:
-                if (rec["rscore"] < THRESH_R
-                    or rec["tscore"] < THRESH_T
-                    or rec["iscore"] < THRESH_I):
+                if (rec["iscore"] < THRESH_I):
                     # mark that particular template rectangle as low-conf
                     low_confidence_by_page[pg].append(rec["bbox"])
                 else:
