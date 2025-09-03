@@ -295,7 +295,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
   const onPointerUp=e=>{if(!drawingRef.current) return; e.preventDefault(); drawingRef.current=false;
     overlayRef.current.releasePointerCapture?.(e.pointerId);
     if(!draft||draft.w<4||draft.h<4){setDraft(null);setConfirmUI(null);return;}
-    setConfirmUI({left:draft.x+draft.w, top:draft.y+draft.h});};
+    setConfirmUI({left:draft.x+draft.w + 8, top:draft.y+draft.h + 8});};
 
   const confirmDraft=()=>{
     if (!overlayRef.current || !draft) return;
@@ -420,20 +420,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
 
   // ------- UI -------
   return (
-     <main
-      className="min-h-screen text-neutral-100"
-      style={{
-        backgroundColor: "#0a0a0a",
-        backgroundImage: `
-          url('https://cdn.prod.website-files.com/64d5fb2b157c9ade05fb1e3f/68acf090103ad564b442a3b8_404fd28d023fe7ff7a21b3898e217fc9_shutterstock_2205257041.avif'),
-          radial-gradient(1200px 600px at 20% 10%, rgba(16,185,129,0.08), transparent 60%),
-          radial-gradient(900px 500px at 85% 85%, rgba(59,130,246,0.06), transparent 60%)
-        `,
-        backgroundBlendMode: "overlay, normal, normal",
-        backgroundSize: "cover, auto, auto",
-        backgroundPosition: "center, center, center",
-      }}
-    >
+     <main className="min-h-screen bg-neutral-950 text-neutral-100">
       <div className="mx-auto max-w-7xl px-4 py-6">
         <header className="mb-4 flex items-center gap-3">
           <button className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800" onClick={onBack} type="button">
@@ -569,7 +556,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
               />
               {confirmUI&&draft&&(
                 <div className="absolute z-20 rounded-xl border border-neutral-700 bg-neutral-900 text-sm shadow-md"
-                     style={{left:confirmUI.left, top:confirmUI.top, transform: "translate(8px, 8px)"}}>
+                     style={{left:confirmUI.left, top:confirmUI.top}}>
                   <div className="flex">
                     <button type="button" className="px-3 py-1.5 hover:bg-neutral-800 border-r border-neutral-800 inline-flex items-center gap-1" onClick={confirmDraft}><IconCheck />Confirm</button>
                     <button type="button" className="px-3 py-1.5 hover:bg-neutral-800 inline-flex items-center gap-1" onClick={cancelDraft}><IconX />Cancel</button>
@@ -844,20 +831,7 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
   }
 
   return (
-     <main
-      className="min-h-screen text-neutral-100"
-      style={{
-        backgroundColor: "#0a0a0a",
-        backgroundImage: `
-          url('https://cdn.prod.website-files.com/64d5fb2b157c9ade05fb1e3f/68acf090103ad564b442a3b8_404fd28d023fe7ff7a21b3898e217fc9_shutterstock_2205257041.avif'),
-          radial-gradient(1200px 600px at 20% 10%, rgba(16,185,129,0.08), transparent 60%),
-          radial-gradient(900px 500px at 85% 85%, rgba(59,130,246,0.06), transparent 60%)
-        `,
-        backgroundBlendMode: "overlay, normal, normal",
-        backgroundSize: "cover, auto, auto",
-        backgroundPosition: "center, center, center",
-      }}
-    >
+     <main className="min-h-screen bg-neutral-950 text-neutral-100">
       <div className="mx-auto max-w-4xl px-4 py-6">
         <header className="mb-4 flex items-center gap-3">
           <button className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800" onClick={onBack} type="button">
@@ -1002,21 +976,7 @@ export default function App() {
   }
 
   return (
-    <main
-      className="min-h-screen text-neutral-100"
-      style={{
-        backgroundColor: "#0a0a0a",
-        backgroundImage: `
-          url('https://cdn.prod.website-files.com/64d5fb2b157c9ade05fb1e3f/68acf090103ad564b442a3b8_404fd28d023fe7ff7a21b3898e217fc9_shutterstock_2205257041.avif'),
-          radial-gradient(1200px 600px at 20% 10%, rgba(16,185,129,0.08), transparent 60%),
-          radial-gradient(900px 500px at 85% 85%, rgba(59,130,246,0.06), transparent 60%)
-        `,
-        backgroundBlendMode: "overlay, normal, normal",
-        backgroundSize: "cover, auto, auto",
-        backgroundPosition: "center, center, center",
-      }}
-    >
-
+   <main className="min-h-screen bg-neutral-950 text-neutral-100">
       <div className="mx-auto max-w-4xl px-4 py-10">
         <header className="mb-8">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Wootz.Sanitize</h1>
