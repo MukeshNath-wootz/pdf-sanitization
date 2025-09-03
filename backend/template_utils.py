@@ -450,13 +450,13 @@ def extract_zones_content(pdf_path: str, rectangles: list, _return_skips: bool =
                 text = " ".join(extracted).strip()
 
                 # 6) OCR fallback only if native empty (crop via transformed bbox): there are 2 options: 1) using fitz, 2) using pdfplumber
-                if not text:
+                #if not text:
                     # fitz method
-                    pix_ocr = page_fz.get_pixmap(clip=fitz.Rect(*orig_bbox), dpi=300)
-                    img_ocr = Image.frombytes("RGB", [pix_ocr.width, pix_ocr.height], pix_ocr.samples)
-                    text = pytesseract.image_to_string(img_ocr)
+                    #pix_ocr = page_fz.get_pixmap(clip=fitz.Rect(*orig_bbox), dpi=300)
+                    #img_ocr = Image.frombytes("RGB", [pix_ocr.width, pix_ocr.height], pix_ocr.samples)
+                    #text = pytesseract.image_to_string(img_ocr)
 
-                    # pdfplumber method:
+                    ## pdfplumber method:
                     # crop_img = page_pl.crop(orig_bbox).to_image(resolution=300).original
                     # text = pytesseract.image_to_string(crop_img, config='--psm 6') #psm 6 is not working that much good in our case
 
