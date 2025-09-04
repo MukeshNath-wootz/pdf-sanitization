@@ -124,7 +124,7 @@ function SearchableClientDropdown({ value, onChange, options }) {
 }
 
 /* ================== New Client Setup Page (2-step UI) ================== */
-function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
+function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  }) {
   const [activeIndex,setActiveIndex]=useState(0);
   const [rects,setRects]=useState([]);                 // {id,x,y,w,h} normalized
   const [rectActions,setRectActions]=useState({});      // id -> { action: 'redact'|'logo', logoFile?: File }
@@ -160,6 +160,23 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack }) {
   const replParsed=useMemo(()=>parseReplacementMap(replRaw),[replRaw]);
   const [threshold,setThreshold]=useState(0.9);
   const [pageMeta, setPageMeta] = useState(null);
+ 
+  useEffect(() => {
+    if (!initialSecondary) return;
+    const { files: secFiles, client, lowConf } = initialSecondary || {};
+    if (Array.isArray(secFiles) && secFiles.length > 0) {
+      setIsSecondaryMode(true);
+      setSecondaryFiles(secFiles);
+      setSecondaryClient(client || clientName);
+      setLastLowConf(Array.isArray(lowConf) ? lowConf : []);
+      setActiveIndex(0);
+      setPageIndex(0);
+      setStep(1);
+    }
+    // do not clear here; App clears pendingSecondary one-shot
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSecondary]);
+ 
   
   async function autoLoadSecondaryFromLowConf(lowConf, client) {
   const targets = (lowConf || []).map(it => {
@@ -783,6 +800,8 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
   const [replRaw, setReplRaw] = useState("");
   const replParsed = useMemo(() => parseReplacementMap(replRaw), [replRaw]);
   const [threshold, setThreshold] = useState(0.9);
+  const [lastZipUrl, setLastZipUrl] = useState("");
+  const [lastLowConf, setLastLowConf] = useState([]);
 
   // We’ll ask the parent App to switch to the New Client flow when needed.
   // We'll pass this as a prop shortly.
@@ -790,45 +809,31 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
 
   async function runSanitizationExisting() {
     if (!pdfFiles.length) { alert("Please add at least one PDF."); return; }
+  
     const form = new FormData();
     pdfFiles.forEach(f => form.append("files", f));
     form.append("manual_names", JSON.stringify(eraseList));
     form.append("text_replacements", JSON.stringify(replParsed.map));
     form.append("threshold", String(threshold));
-    form.append("client_name", clientName); // key for v1 template on server
-
-    const res = await fetch(`${API_BASE}/api/sanitize-existing`, { method: "POST", body: form });
+    form.append("client_name", clientName);
+    form.append("secondary", "false"); // existing-template primary pass
+  
+    const res = await fetch(`${API_BASE}/api/sanitize-existing`, {
+      method: "POST",
+      headers: { "Accept": "application/json" },  // ⬅ ask for JSON (zip_url + low_conf)
+      body: form
+    });
     if (!res.ok) { alert("Backend error while sanitizing."); return; }
-    const contentType = res.headers.get("content-type") || "";
-
-    if (contentType.includes("application/zip")) {
-      const blob = await res.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = `${clientName}_sanitized_pdfs.zip`; // You can customize the name if needed
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(downloadUrl);
-      return;
-    }
-    // Optional: show which template id was created, e.g., acme_v1 (fallback for older JSON-based response)
     const payload = await res.json();
-
+  
     if (payload.template_id) console.log("Using template:", payload.template_id);
-
-    const results = (payload.outputs || []).map(o => ({
-      name: o.name,
-      url: o.url,
-    }));
-    if (!results.length) { alert("No output files reported by backend."); return; }
-
-    const list = results.map(r => `<li><a href="${r.url}" target="_blank" rel="noreferrer">${r.name}</a></li>`).join("");
-    const w = window.open("", "_blank");
-    if (w) { w.document.write(`<h3>Sanitized Results</h3><ul>${list}</ul>`); w.document.close(); }
-    else { alert("Pop-up blocked. Check console for URLs."); console.log("Sanitized results:", results); }
+  
+    // Save for UI like New Client page
+    const lowConf = Array.isArray(payload.low_conf) ? payload.low_conf : [];
+    setLastLowConf(lowConf);
+    setLastZipUrl(payload.zip_url ? absApiUrl(payload.zip_url) : "");
   }
+
 
   return (
      <main className="min-h-screen bg-neutral-950 text-neutral-100">
@@ -908,6 +913,61 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
                         className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500">
                   <IconCheck /> Run Sanitization
                 </button>
+                {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
+                  <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
+                    {lastZipUrl && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
+                        onClick={async () => {
+                          try {
+                            await downloadFile(lastZipUrl, `${clientName}_sanitized_pdfs.zip`);
+                          } catch (e) {
+                            alert("Could not download the ZIP. See console for details.");
+                            console.error(e);
+                          }
+                        }}
+                      >
+                        Download ZIP
+                      </button>
+                    )}
+                
+                    {(lastLowConf && lastLowConf.length > 0) && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
+                        onClick={() => {
+                          // Hand the low-conf batch to parent so we can jump into the drawing screen
+                          if (typeof onProceedSecondary === "function") {
+                            onProceedSecondary(lastLowConf, clientName);
+                          } else {
+                            alert("Secondary hand-off not wired in App()");
+                          }
+                        }}
+                      >
+                        Proceed with secondary process batch
+                      </button>
+                    )}
+                
+                    {(lastLowConf && lastLowConf.length > 0) && (
+                      <div className="mt-3 text-xs text-neutral-400">
+                        <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
+                        <ul className="list-disc pl-5 space-y-1">
+                          {lastLowConf.map((it, idx) => {
+                            const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
+                            const pages = Object.keys(it.low_rects || {}).map(n => Number(n) + 1);
+                            return (
+                              <li key={idx}>
+                                <span className="text-neutral-200">{base}</span>
+                                {pages.length ? ` — pages: ${pages.join(", ")}` : ""}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -930,6 +990,45 @@ export default function App() {
   const [newClientName,setNewClientName]=useState(""); 
   const [submitting,setSubmitting]=useState(false);
   const [existingClients, setExistingClients] = useState([]);
+  const [pendingSecondary, setPendingSecondary] = useState(null); 
+  // shape: { files: File[], client: string, lowConf: any[] }
+  useEffect(() => {
+    if (stage !== "newClient") return;
+    if (!pendingSecondary) return;
+    // clear it after mount so it’s not re-used
+    const t = setTimeout(() => setPendingSecondary(null), 0);
+    return () => clearTimeout(t);
+  }, [stage, pendingSecondary]);
+
+ 
+  async function proceedSecondaryFromExisting(lowConf, client) {
+   // download the sanitized PDFs reported in low_conf (same logic as NewClient auto loader)
+   const targets = (lowConf || []).map(it => {
+     const base = (it.pdf || "").split(/[\\/]/).pop() || "";
+     return `${base.replace(/\.pdf$/i, "")}_sanitized.pdf`;
+   });
+ 
+   const fetched = [];
+   for (const name of targets) {
+     try {
+       const url = `${API_BASE}/api/download/${encodeURIComponent(name)}`;
+       const resp = await fetch(url);
+       if (!resp.ok) continue;
+       const blob = await resp.blob();
+       fetched.push(new File([blob], name, { type: "application/pdf" }));
+     } catch (e) {
+       console.warn("Failed to fetch sanitized file:", name, e);
+     }
+   }
+ 
+   if (!fetched.length) {
+     alert("Could not auto-load low-confidence PDFs for secondary.");
+     return;
+   }
+   setPendingSecondary({ files: fetched, client, lowConf });
+   setStage("newClient");
+ }
+
   useEffect(() => {
     (async () => {
       try {
@@ -961,6 +1060,7 @@ export default function App() {
         pdfFiles={files}
         clientName={clientChoice === "new" ? newClientName.trim() : clientChoice}
         onBack={() => setStage("home")}
+        initialSecondary={pendingSecondary}
       />
     );
   }
@@ -971,6 +1071,7 @@ export default function App() {
         clientName={clientChoice}
         onBack={()=>setStage("home")}
         onTreatAsNew={()=>setStage("newClient")}  // ← allow child to jump into new-client (rectangles) flow
+        onProceedSecondary={proceedSecondaryFromExisting}
       />
     );
   }
