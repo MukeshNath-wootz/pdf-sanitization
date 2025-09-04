@@ -793,7 +793,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 }
 
 /* ================== Existing Client Page (unchanged placeholder) ================== */
-function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
+function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProceedSecondary }) {
   const [mode, setMode] = useState("use-existing"); // 'use-existing' | 'treat-as-new'
   const [eraseRaw, setEraseRaw] = useState("");
   const eraseList = useMemo(() => parseEraseCSV(eraseRaw), [eraseRaw]);
@@ -806,6 +806,8 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
   // We’ll ask the parent App to switch to the New Client flow when needed.
   // We'll pass this as a prop shortly.
   const goToNewFlow = typeof onTreatAsNew === "function" ? onTreatAsNew : null;
+  const goToSecondary = typeof onProceedSecondary === "function" ? onProceedSecondary : null;
+
 
   async function runSanitizationExisting() {
     if (!pdfFiles.length) { alert("Please add at least one PDF."); return; }
@@ -938,8 +940,8 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew  }) {
                         className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
                         onClick={() => {
                           // Hand the low-conf batch to parent so we can jump into the drawing screen
-                          if (typeof onProceedSecondary === "function") {
-                            onProceedSecondary(lastLowConf, clientName);
+                          if (goToSecondary) {
+                            goToSecondary(lastLowConf, clientName);;
                           } else {
                             alert("Secondary hand-off not wired in App()");
                           }
