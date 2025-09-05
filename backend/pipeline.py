@@ -337,8 +337,9 @@ def process_batch(
         # print (all_rects)
 
     # ── Step 5: Redact template + manual zones ──
-        RedactionEngine.redact(pdf, all_rects, sanitized)
-
+        if all_rects:
+             RedactionEngine.redact(pdf, all_rects, sanitized)
+           
     # ── Step 6: Place images into specified rectangles ──
         # Resolve Supabase storage keys (e.g., "logos/<client>/<file>") to local temp files
         def _resolve_logo_to_local(val: str, _cache: dict) -> str:
@@ -655,9 +656,62 @@ def process_low_conf_batch(
     return results_low_conf
 
 
-# Placeholder for UI prototype (e.g., Streamlit or Flask)
-def launch_ui():
-    pass  # TODO: implement web UI for template upload, drawing, batch processing
+def process_text_only(
+    pdf_paths: list[str],
+    output_dir: str,
+    manual_names: list[str] | None = None,
+    text_replacements: dict[str, str] | None = None,
+    input_root: str | None = None,      # NEW: was used but undefined
+    secondary: bool = False             # NEW: was used but undefined
+) -> list[dict]:
+    """
+    Manual-only path reusing Steps 3/4/5/7 via your utilities:
+      3) collect_manual_replacements
+      4) RedactionEngine.redact
+      5) apply_manual_replacements
+      7) save
+    """
+    template_rects: list[dict] = []
+    os.makedirs(output_dir, exist_ok=True)
+
+    low_conf: list[dict] = []
+
+    for pdf in pdf_paths:
+        base = os.path.splitext(os.path.basename(pdf))[0]
+
+        # choose sanitized output path
+        if input_root:
+            rel_path = os.path.relpath(pdf, input_root)
+            target_dir = os.path.join(output_dir, os.path.dirname(rel_path))
+            os.makedirs(target_dir, exist_ok=True)
+            sanitized = os.path.join(target_dir, f"{base}_sanitized.pdf")
+        else:
+            sanitized = os.path.join(output_dir, f"{base}_sanitized.pdf")
+
+        # ── Step 3: collect manual rects + replacement payload ──
+        if not secondary:
+            manual_rects, manual_rep_data = collect_manual_replacements(
+                pdf,
+                manual_names or [],
+                text_replacements or {}
+            )  # produces rects + styled replacement_data (font/size/color) :contentReference[oaicite:2]{index=2}
+        else:
+            manual_rects, manual_rep_data = [], {}
+
+        # ── Step 4 & 7: redact to sanitized (or pass-through if nothing to redact) ──
+        if manual_rects:
+            RedactionEngine.redact(pdf, manual_rects, sanitized)
+        else:
+            # nothing to redact → just save-through
+            doc = fitz.open(pdf)
+            doc.save(sanitized)
+            doc.close()
+
+        # ── Step 5 (+7): apply styled replacements (skip in secondary) ──
+        if not secondary and manual_rep_data:
+            apply_manual_replacements(sanitized, manual_rep_data, template_rects)  # atomic save inside :contentReference[oaicite:3]{index=3}
+
+    return low_conf
 
 
 if __name__ == '__main__':
