@@ -5,7 +5,7 @@ from fastapi import FastAPI, UploadFile, Form, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from pipeline import process_batch
+from pipeline import process_batch, process_text_only
 from template_utils import TemplateManager
 
 # --- CORS: allow specific origins from env, else default to * for dev ---
@@ -160,31 +160,48 @@ async def sanitize(
     raw_map = json.loads(image_map or "{}")
     img_map = {int(k): v for k, v in raw_map.items()} if raw_map else {}
 
-    # 3) versioned template id
-    tm = TemplateManager()
-    client = _safe_client_id(client_name)
-    template_id = tm.next_version_id(client)
+    client = _safe_client_id(client_name)   # moved earlier so both branches can use it
+    template_id = None                      # will be set in template branch
+    low_conf = []                           # default; template branch will overwrite
 
-    # 4) save profile (multi-pdf)
-    tm.save_profile_multi(
-        template_id=template_id,
-        rectangles=zones,
-        index_to_path=index_to_path,
-        image_map=img_map,
-    )
 
-    # 5) run batch
-    low_conf = process_batch(
-        pdf_paths=paths,
-        template_id=template_id,
-        output_dir=STATIC_DIR,
-        threshold=threshold,
-        manual_names=names,
-        text_replacements=replacements,
-        image_map=img_map,
-        input_root=None,
-        secondary=secondary,   # <-- skip LLM/manual/replacements when True
-    )
+    if (len(zones) == 0) and (names or replacements):
+        # Manual-only path (no template save)
+        process_text_only(
+            pdf_paths=paths,                 # you already built this list above
+            output_dir=STATIC_DIR,           # reuse your standard output folder
+            manual_names=names,
+            text_replacements=replacements,
+            input_root=None,
+            secondary=False
+        )
+        template_id = "manual_only"          # so the response object has something sensible
+        # then fall through to the common ZIP/response code below
+    else:
+        # 3) versioned template id
+        tm = TemplateManager()
+        template_id = tm.next_version_id(client)
+    
+        # 4) save profile (multi-pdf)
+        tm.save_profile_multi(
+            template_id=template_id,
+            rectangles=zones,
+            index_to_path=index_to_path,
+            image_map=img_map,
+        )
+    
+        # 5) run batch
+        low_conf = process_batch(
+            pdf_paths=paths,
+            template_id=template_id,
+            output_dir=STATIC_DIR,
+            threshold=threshold,
+            manual_names=names,
+            text_replacements=replacements,
+            image_map=img_map,
+            input_root=None,
+            secondary=secondary,   # <-- skip LLM/manual/replacements when True
+        )
 
 
     # 6) — Clean up old ZIPs first
