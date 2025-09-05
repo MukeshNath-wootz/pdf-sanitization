@@ -372,6 +372,10 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
         }
       }
     });
+   const hasManualErase = Array.isArray(eraseList) && eraseList.length > 0;
+   const hasReplacements = replParsed?.map && Object.keys(replParsed.map).length > 0;
+   const canProceed = (template_zones.length > 0) || hasManualErase || hasReplacements;
+
 
     form.append("template_zones", JSON.stringify(template_zones));
     form.append("manual_names", JSON.stringify(eraseList));
@@ -725,8 +729,16 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                   </div>
                   <div className="flex gap-2">
                     <button type="button" onClick={()=>setStep(1)} className="rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700">← Back</button>
-                    <button type="button" onClick={runSanitization}
-                            className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500">
+                    <button
+                      type="button"
+                      onClick={runSanitization}
+                      disabled={!canProceed}
+                      className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border ${
+                        canProceed
+                          ? "border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500"
+                          : "border-neutral-800 bg-neutral-900 text-neutral-500 cursor-not-allowed"
+                      }`}
+                    >
                       <IconCheck /> Run Sanitization
                     </button>
                    {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
