@@ -15,7 +15,7 @@ from imagehash import phash
 # Portable Tesseract path: works on Render (Linux) and Windows (if env is set)
 pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", "tesseract")
 
-from paper_sz_ort_utils import _classify_pdf_layout, _filter_rectangles_for_layout
+from paper_sz_ort_utils import _classify_page_layout, _filter_rectangles_for_layout
 
 # Optional Supabase Storage
 # =========================
@@ -246,7 +246,7 @@ class TemplateManager:
         Filters rectangles by detected layout, extracts contents, then writes JSON
         both locally and to Supabase (if configured).
         """
-        paper, orient, _ = _classify_pdf_layout(pdf_path)
+        paper, orient, _ = _classify_page_layout(pdf_path)
         active_rects = _filter_rectangles_for_layout(rectangles, paper, orient)
         if not active_rects:
             raise ValueError(
@@ -314,7 +314,7 @@ class TemplateManager:
 
             # 2b) Detect the SOURCE PDF layout and filter to matching rectangles
             try:
-                src_paper, src_orient, _ = _classify_pdf_layout(src_pdf)
+                src_paper, src_orient, _ = _classify_page_layout(src_pdf)
                 print(f"[TemplateMulti] Source={src_pdf} layout paper={src_paper}, orientation={src_orient}")
             except Exception:
                 print(f"[TemplateMulti] Could not classify layout for {src_pdf}: {e}")
