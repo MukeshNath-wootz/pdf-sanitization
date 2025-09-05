@@ -161,6 +161,10 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
   const [threshold,setThreshold]=useState(0.9);
   const [pageMeta, setPageMeta] = useState(null);
  
+  const hasManualErase = Array.isArray(eraseList) && eraseList.length > 0;
+  const hasReplacements = replParsed?.map && Object.keys(replParsed.map).length > 0;
+  const canProceed = (rects.length > 0) || hasManualErase || hasReplacements;
+ 
   useEffect(() => {
     if (!initialSecondary) return;
     const { files: secFiles, client, lowConf } = initialSecondary || {};
@@ -372,9 +376,6 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
         }
       }
     });
-   const hasManualErase = Array.isArray(eraseList) && eraseList.length > 0;
-   const hasReplacements = replParsed?.map && Object.keys(replParsed.map).length > 0;
-   const canProceed = (template_zones.length > 0) || hasManualErase || hasReplacements;
 
 
     form.append("template_zones", JSON.stringify(template_zones));
