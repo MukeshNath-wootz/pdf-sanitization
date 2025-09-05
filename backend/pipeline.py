@@ -142,31 +142,28 @@ def process_batch(
 
 
 
-    # ── Step 1: Determine page count & replicate template zones ──
-        paper, orient, (pw, ph) = _classify_pdf_layout(pdf_path=pdf, tol=0.05)
-        print(f"[Layout] {pdf}: paper={paper}, orientation={orient}, size=({pw:.1f}×{ph:.1f})")
+    # ── Step 1: Per-page layout + per-page active rects ──
+        page_layouts = _classify_pdf_layout(pdf_path=pdf, tol=0.1)
+        # print(f"[Layout] {pdf}: paper={paper}, orientation={orient}, size=({pw:.1f}×{ph:.1f})")
 
-        # filter rectangles for this layout
-        filtered = _filter_rectangles_for_layout(rectangles, paper, orient)
-        # Attach template index: find 'r' inside original 'rectangles' by identity/equality
-        active_rectangles = []
-        for i, r in enumerate(rectangles):
-            if r in filtered:
-                rr = dict(r)  # shallow copy
-                rr["tidx"] = i  # original template index
-                # group id based on the source source idx (fallback to pdf name)
-                gid = f"idx:{r.get('source_index', 0)}"
-                if not gid:
-                    gid = r.get("source_pdf")
-                rr["group_id"] = gid
-                active_rectangles.append(rr)
-        print(f"[Layout] Active rectangles for {pdf}: {len(active_rectangles)} found")
-        print(f"[Layout] Active rectangles for {pdf}: {active_rectangles}")
-
-        if not active_rectangles:
-            # No applicable rectangles for this PDF's layout -> flag low-confidence and skip
-            print(f"[Layout] No rectangles match layout (paper={paper}, orientation={orient}). Skipping {pdf} and flagging.")
-            # flag across all pages so reviewer sees it's a layout mismatch
+        # Build per-page active rectangles, preserving tidx & group_id
+        active_rects_by_page = []   # List[List[dict]]
+        for (paper_i, orient_i, _wh) in page_layouts:
+            filtered = _filter_rectangles_for_layout(rectangles, paper_i, orient_i)
+            page_rects = []
+            for i, r in enumerate(rectangles):
+                if r in filtered:
+                    rr = dict(r)                          # shallow copy
+                    rr["tidx"] = i                        # keep template index
+                    rr["group_id"] = f"idx:{r.get('source_index', 0)}" or r.get("source_pdf")
+                    page_rects.append(rr)
+            active_rects_by_page.append(page_rects)
+        
+        num_pages = len(active_rects_by_page)
+        
+        # If no page got any rectangles → flag as low-confidence (consistent with your old behavior)
+        if all(len(lst) == 0 for lst in active_rects_by_page):
+            print(f"[Layout] No rectangles match any page layout. Skipping {pdf} and flagging.")
             doc = fitz.open(pdf)
             page_to_bboxes = {i: [r["bbox"] for r in rectangles] for i in range(doc.page_count)}
             doc.close()
@@ -175,6 +172,16 @@ def process_batch(
                 "low_rects": page_to_bboxes
             })
             continue
+        
+        # Recreate your original **format** using the same list-comprehension style
+        replicated_rectangles = [
+            {"page": i, "bbox": r["bbox"], "tidx": r["tidx"], "group_id": r.get("group_id")}
+            for i, rects in enumerate(active_rects_by_page)
+            for r in rects
+        ]
+
+        for rect in replicated_rectangles:
+            print(f"page: {rect['page']}, bbox: {rect['bbox']}, tidx: {rect['tidx']}, group_id: {rect['group_id']}")
 
         # if we do have matches, carry on as usual, but replicate only these:
         doc = fitz.open(pdf)
@@ -182,15 +189,6 @@ def process_batch(
         print(f"[Layout] {pdf} has {num_pages} pages")
         rot_meta = [(p.rotation % 360, p.rect.width, p.rect.height) for p in doc]
         doc.close()
-
-        replicated_rectangles = [
-            {"page": i, "bbox": r["bbox"], "tidx": r["tidx"], "group_id": r.get("group_id")}
-            for i in range(num_pages)
-            for r in active_rectangles
-        ]
-
-        for rect in replicated_rectangles:
-            print(f"page: {rect['page']}, bbox: {rect['bbox']}, tidx: {rect['tidx']}")
 
         replicated_rectangles_rotaware = []
         for rr in replicated_rectangles:
@@ -410,11 +408,10 @@ def process_batch(
                 "low_rects": dict(low_confidence_by_page)
             })
 
-
-
     return low_conf
 
 # --- pipeline.py (ADD this function below process_batch) ---
+# Currently, this function is not in use, and is not updated as well. Please make it similar to the process_batch function.
 def process_low_conf_batch(
     low_conf: list[dict],
     new_template_id: str,
