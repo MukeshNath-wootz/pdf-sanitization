@@ -53,21 +53,27 @@ def _guess_paper_from_size(width_pts: float, height_pts: float, rel_tol=0.1):
 
 def _classify_pdf_layout(pdf_path: str, tol=0.1):
     """
-    Inspect the first page. Returns (paper, orientation, (w,h)).
-      - paper: 'A3' | 'A4' | 'A2' | 'A1' | 'ANY'
-      - orientation: 'H' (landscape) or 'V' (portrait)
-      - (w,h): page width/height in points
+    Inspect *all* pages of the PDF.
+
+    Returns:
+      List of (paper, orientation, (w,h)) — one tuple per page
+        - paper: 'A3' | 'A4' | 'A2' | 'A1' | 'ANY'
+        - orientation: 'H' (landscape) or 'V' (portrait)
+        - (w,h): page width/height in points
     """
+    page_layouts = []
     doc = fitz.open(pdf_path)
     try:
-        page = doc[0]
-        r = page.rect
-        w, h = float(r.width), float(r.height)
-        orientation = "H" if w >= h else "V"
-        paper = _guess_paper_from_size(w, h, tol)
-        return paper, orientation, (w, h)
+        for page in doc:
+            r = page.rect
+            w, h = float(r.width), float(r.height)
+            orientation = "H" if w >= h else "V"
+            paper = _guess_paper_from_size(w, h, tol)
+            page_layouts.append((paper, orientation, (w, h)))
+        return page_layouts
     finally:
         doc.close()
+
 
 def _filter_rectangles_for_layout(rectangles: list, paper: str, orientation: str):
     """
