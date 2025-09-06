@@ -171,7 +171,17 @@ def process_batch(
                 "pdf": pdf,
                 "low_rects": page_to_bboxes
             })
+            # ensure there is a sanitized file so API zipping never 404s
+            import shutil  # add at top if not already imported
+            try:
+                if not os.path.exists(os.path.dirname(sanitized)):
+                    os.makedirs(os.path.dirname(sanitized), exist_ok=True)
+                shutil.copyfile(pdf, sanitized)
+            except Exception as _e:
+                print("[Layout] Failed to copy input to sanitized path:", sanitized, _e)
+            
             continue
+
         
         # Recreate your original **format** using the same list-comprehension style
         replicated_rectangles = [
