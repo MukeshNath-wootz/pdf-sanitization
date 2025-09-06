@@ -381,6 +381,8 @@ def process_batch(
                 mapped = None
                 if ti is not None and isinstance(image_map, dict):
                     mapped = image_map.get(ti)
+                    if mapped is None:
+                        mapped = image_map.get(str(ti))  # fallback if keys are str
                 print(f"[Place] idx={idx} (page={rc['page']}, tidx={ti}) → mapped={mapped}")
                 if mapped:
                     enum_image_map[idx] = _resolve_logo_to_local(mapped, _logo_cache)
