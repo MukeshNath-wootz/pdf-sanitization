@@ -242,7 +242,7 @@ async def sanitize(
             secondary=secondary,   # <-- skip LLM/manual/replacements when True
         )
 
-        # -- Passlog: filter out pages that have passed before & update the passlog with new passes
+    # -- Passlog: filter out pages that have passed before & update the passlog with new passes
     passlog = _load_passlog(client)
     # Build a quick map of failing pages returned by pipeline, keyed by normalized base name
     failing_by_base = {}
@@ -305,11 +305,23 @@ async def sanitize(
         base = os.path.splitext(os.path.basename(p))[0]
         fn = f"{base}_sanitized.pdf"
         sanitized_path = os.path.join(STATIC_DIR, fn)
-        sanitized_paths.append(sanitized_path)
-
+        # if pipeline did not produce it (edge cases), create a copy so zipping is safe
+        if not os.path.exists(sanitized_path):
+            try:
+                os.makedirs(os.path.dirname(sanitized_path), exist_ok=True)
+                shutil.copyfile(p, sanitized_path)
+            except Exception as _e:
+                print("[API] Could not create fallback sanitized file:", sanitized_path, _e)
+                # If even copy fails, we just won't include it
+                sanitized_path = None
+        if sanitized_path and os.path.exists(sanitized_path):
+            sanitized_paths.append(sanitized_path)
+    
     zip_filename = f"{client}_sanitized_pdfs.zip"
     zip_path = os.path.join(STATIC_DIR, zip_filename)
-    zip_append_with_versions(zip_path, sanitized_paths)
+    if sanitized_paths:
+        zip_append_with_versions(zip_path, sanitized_paths)
+
 
 
     # Optional cleanup of individual PDFs
@@ -417,6 +429,61 @@ async def sanitize_existing(
         input_root=None,
         secondary=secondary,
     )
+    # -- Passlog: filter out pages that have passed before & update the passlog with new passes
+    passlog = _load_passlog(client)
+    # Build a quick map of failing pages returned by pipeline, keyed by normalized base name
+    failing_by_base = {}
+    for item in (low_conf or []):
+        base_key = _norm_key_from_path(item.get("pdf") or "")
+        pages = sorted({int(k) for k in (item.get("low_rects") or {}).keys()})
+        failing_by_base[base_key] = pages
+
+    # Count pages for each input path, compute new passes, and update passlog
+    for p in paths:
+        base_key = _norm_key_from_path(p)
+        try:
+            # how many pages in this PDF
+            with fitz.open(p) as d:
+                n_pages = int(d.page_count)
+        except Exception:
+            # if something odd, fall back to: only treat non-failing pages we saw as passes via current failing set
+            n_pages = None
+
+        already = set(passlog.get(base_key, []))
+        failing = set(failing_by_base.get(base_key, []))
+
+        if n_pages is not None and n_pages > 0:
+            all_pages = set(range(n_pages))
+            newly_passed = all_pages - failing
+        else:
+            # no count -> treat pages that are not reported as failing (unknown) as newly passed = empty
+            newly_passed = set()
+
+        if newly_passed:
+            passlog[base_key] = sorted(already | newly_passed)
+
+    # Now filter the low_conf we’re about to return: drop any page that is already in passlog
+    filtered_low_conf = []
+    for item in (low_conf or []):
+        base_key = _norm_key_from_path(item.get("pdf") or "")
+        already = set(passlog.get(base_key, []))
+        page_to_bboxes = item.get("low_rects") or {}
+        kept = {}
+        for k, v in page_to_bboxes.items():
+            try:
+                pidx = int(k)
+            except Exception:
+                continue
+            if pidx in already:
+                continue
+            kept[pidx] = v
+        if kept:
+            filtered_low_conf.append({"pdf": item.get("pdf"), "low_rects": kept})
+
+    # overwrite low_conf with the filtered view and persist the passlog
+    low_conf = filtered_low_conf
+    _save_passlog(client, passlog)
+
 
     # 6) — Clean up old ZIPs first
     delete_old_zips(STATIC_DIR, hours=1)
@@ -426,11 +493,23 @@ async def sanitize_existing(
         base = os.path.splitext(os.path.basename(p))[0]
         fn = f"{base}_sanitized.pdf"
         sanitized_path = os.path.join(STATIC_DIR, fn)
-        sanitized_paths.append(sanitized_path)
-
+        # if pipeline did not produce it (edge cases), create a copy so zipping is safe
+        if not os.path.exists(sanitized_path):
+            try:
+                os.makedirs(os.path.dirname(sanitized_path), exist_ok=True)
+                shutil.copyfile(p, sanitized_path)
+            except Exception as _e:
+                print("[API] Could not create fallback sanitized file:", sanitized_path, _e)
+                # If even copy fails, we just won't include it
+                sanitized_path = None
+        if sanitized_path and os.path.exists(sanitized_path):
+            sanitized_paths.append(sanitized_path)
+    
     zip_filename = f"{client}_sanitized_pdfs.zip"
     zip_path = os.path.join(STATIC_DIR, zip_filename)
-    zip_append_with_versions(zip_path, sanitized_paths)
+    if sanitized_paths:
+        zip_append_with_versions(zip_path, sanitized_paths)
+
 
 
     # Optional cleanup of individual PDFs
