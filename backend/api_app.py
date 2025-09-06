@@ -2,6 +2,7 @@
 import os, shutil, tempfile, zipfile, json, uuid
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, Form, File, Request
+import fitz 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -31,7 +32,7 @@ STATIC_DIR = os.path.abspath("output_sanitized")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 import time
-
+# helper to delete old zip files
 def delete_old_zips(folder: str, hours: int = 1):
     """
     Deletes ZIP files in `folder` older than `hours`.
@@ -80,6 +81,44 @@ def zip_append_with_versions(zip_path: str, file_paths: list[str]) -> str:
             z.write(fp, arcname=arc)
             existing.add(arc)
     return zip_path
+
+# helpers for passlog to show only low conf pages filtering out processed pages
+def _passlog_path_for(client: str) -> str:
+    return os.path.join(STATIC_DIR, f"{client}_passlog.json")
+
+def _load_passlog(client: str) -> dict:
+    path = _passlog_path_for(client)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # normalize to lists of ints
+            fixed = {}
+            for k, v in (data.items() if isinstance(data, dict) else []):
+                try:
+                    fixed[k] = sorted({int(x) for x in (v or [])})
+                except Exception:
+                    fixed[k] = []
+            return fixed
+    except Exception:
+        return {}
+
+def _save_passlog(client: str, data: dict) -> None:
+    path = _passlog_path_for(client)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _norm_key_from_path(p: str) -> str:
+    """Use base filename, strip '_sanitized' suffix, keep .pdf."""
+    base = os.path.basename(p)
+    # turn 'X_sanitized.pdf' -> 'X.pdf'
+    if base.lower().endswith("_sanitized.pdf"):
+        base = base[:-len("_sanitized.pdf")] + ".pdf"
+    return base
 
 # ---------- Optional Supabase outputs/templates/logos ----------
 try:
@@ -203,6 +242,60 @@ async def sanitize(
             secondary=secondary,   # <-- skip LLM/manual/replacements when True
         )
 
+        # -- Passlog: filter out pages that have passed before & update the passlog with new passes
+    passlog = _load_passlog(client)
+    # Build a quick map of failing pages returned by pipeline, keyed by normalized base name
+    failing_by_base = {}
+    for item in (low_conf or []):
+        base_key = _norm_key_from_path(item.get("pdf") or "")
+        pages = sorted({int(k) for k in (item.get("low_rects") or {}).keys()})
+        failing_by_base[base_key] = pages
+
+    # Count pages for each input path, compute new passes, and update passlog
+    for p in paths:
+        base_key = _norm_key_from_path(p)
+        try:
+            # how many pages in this PDF
+            with fitz.open(p) as d:
+                n_pages = int(d.page_count)
+        except Exception:
+            # if something odd, fall back to: only treat non-failing pages we saw as passes via current failing set
+            n_pages = None
+
+        already = set(passlog.get(base_key, []))
+        failing = set(failing_by_base.get(base_key, []))
+
+        if n_pages is not None and n_pages > 0:
+            all_pages = set(range(n_pages))
+            newly_passed = all_pages - failing
+        else:
+            # no count -> treat pages that are not reported as failing (unknown) as newly passed = empty
+            newly_passed = set()
+
+        if newly_passed:
+            passlog[base_key] = sorted(already | newly_passed)
+
+    # Now filter the low_conf we’re about to return: drop any page that is already in passlog
+    filtered_low_conf = []
+    for item in (low_conf or []):
+        base_key = _norm_key_from_path(item.get("pdf") or "")
+        already = set(passlog.get(base_key, []))
+        page_to_bboxes = item.get("low_rects") or {}
+        kept = {}
+        for k, v in page_to_bboxes.items():
+            try:
+                pidx = int(k)
+            except Exception:
+                continue
+            if pidx in already:
+                continue
+            kept[pidx] = v
+        if kept:
+            filtered_low_conf.append({"pdf": item.get("pdf"), "low_rects": kept})
+
+    # overwrite low_conf with the filtered view and persist the passlog
+    low_conf = filtered_low_conf
+    _save_passlog(client, passlog)
 
     # 6) — Clean up old ZIPs first
     delete_old_zips(STATIC_DIR, hours=1)
