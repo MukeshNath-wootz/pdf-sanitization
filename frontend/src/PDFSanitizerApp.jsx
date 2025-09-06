@@ -224,7 +224,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     if (!isSecondaryMode || !lastLowConf?.length) return [];
     const currentName = currentFiles?.[activeIndex]?.name || "";
     if (!currentName) return [];
-    const normalizedBase = currentName.replace(/_sanitized\.pdf$/i, ".pdf");
+    const normalizedBase = currentName.replace(/(_sanitized)+\.pdf$/i, ".pdf");
     const hit = lastLowConf.find(it => (it.pdf || "").endsWith(normalizedBase));
     if (!hit) return [];
     return Object.keys(hit.low_rects || {}).map(n => Number(n)).sort((a,b)=>a-b);
