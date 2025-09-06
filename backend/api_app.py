@@ -113,12 +113,18 @@ def _save_passlog(client: str, data: dict) -> None:
         pass
 
 def _norm_key_from_path(p: str) -> str:
-    """Use base filename, strip '_sanitized' suffix, keep .pdf."""
-    base = os.path.basename(p)
-    # turn 'X_sanitized.pdf' -> 'X.pdf'
-    if base.lower().endswith("_sanitized.pdf"):
-        base = base[:-len("_sanitized.pdf")] + ".pdf"
+    """
+    Use base filename, strip one or MORE trailing '_sanitized' suffixes, keep .pdf.
+    'X_sanitized.pdf' or 'X_sanitized_sanitized.pdf' -> 'X.pdf'
+    """
+    base = os.path.basename(p or "")
+    lower = base.lower()
+    # loop off trailing '_sanitized' segments
+    while lower.endswith("_sanitized.pdf"):
+        base = base[: -(len("_sanitized.pdf"))] + ".pdf"
+        lower = base.lower()
     return base
+
 
 # ---------- Optional Supabase outputs/templates/logos ----------
 try:
