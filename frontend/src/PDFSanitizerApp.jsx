@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import "./home.css";
 // Backend base URL (set Vercel env: VITE_API_BASE=https://<your-render>.onrender.com)
  const API_BASE = String(process.env.REACT_APP_API_BASE || "").replace(/\/+$/, "");
 
@@ -232,6 +233,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
+  const [renderScale, setRenderScale] = useState(0.85); // scale down the PDF view while keeping stable coordinates
 
   // Render first page to canvas
   useEffect(()=>{let cancelled=false;
@@ -246,10 +248,13 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
         // Clamp index
         const pno = Math.min(Math.max(0, pageIndex), total - 1);
         const page = await pdf.getPage(pno + 1);
-        // const viewport=page.getViewport({scale:1}); 
-        // const width=wrapRef.current?wrapRef.current.clientWidth:800;
-        // const scale=width/viewport.width; 
-        const vp=page.getViewport({scale: 1});
+        // Base viewport (scale 1) for stable PDF-space coordinates
+        const baseVp = page.getViewport({ scale: 1 });
+        // Fit into container and apply user renderScale, preventing overflow
+        const maxW = wrapRef.current ? Math.max(320, wrapRef.current.clientWidth || 800) : 800;
+        const fitScale = Math.min(1, maxW / baseVp.width);
+        const scale = Math.min(renderScale, fitScale);
+        const vp = page.getViewport({ scale });
 
         // classify page size by your buckets in PDF points
         function classifySize(w, h) {
@@ -262,17 +267,17 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 
         const meta = {
           pageNo: pno,
-          width: Math.floor(vp.width),
-          height: Math.floor(vp.height),
-          sizeClass: classifySize(vp.width, vp.height),
-          orientation: vp.width >= vp.height ? "H" : "V"
+          width: Math.floor(baseVp.width),
+          height: Math.floor(baseVp.height),
+          sizeClass: classifySize(baseVp.width, baseVp.height),
+          orientation: baseVp.width >= baseVp.height ? "H" : "V"
         };
         setPageMeta(meta);
 
         const ctx=canvas.getContext("2d"); 
         canvas.width=Math.floor(vp.width); 
         canvas.height=Math.floor(vp.height);
-        // Optional: ensure CSS doesn't auto-scale; let the container scroll instead
+        // Keep CSS size equal to pixel size for accurate overlay mapping
         canvas.style.width  = `${Math.floor(vp.width)}px`;
         canvas.style.height = `${Math.floor(vp.height)}px`;
         if (overlayRef.current) {
@@ -285,13 +290,20 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
       }catch(err){console.error(err); setRenderError("Failed to render PDF first page.");}
     }
     render(); return()=>{cancelled=true;};
-  },[file, pageIndex]);
+  },[file, pageIndex, renderScale]);
 
   // Draw overlay (rects + draft)
   useEffect(()=>{const overlay=overlayRef.current; if(!overlay) return; const ctx=overlay.getContext("2d");
     ctx.clearRect(0,0,overlay.width,overlay.height);
-  rects.filter(r => r.fileIdx === activeIndex).forEach(r => {
-    const { x, y, w, h } = r;
+  const sx = (pageMeta?.width && overlay.width) ? (overlay.width / pageMeta.width) : 1;
+  const sy = (pageMeta?.height && overlay.height) ? (overlay.height / pageMeta.height) : 1;
+  rects
+    .filter(r => r.fileIdx === activeIndex && (r.page ?? 0) === (pageMeta?.pageNo ?? 0))
+    .forEach(r => {
+    const x = Math.round(r.x * sx);
+    const y = Math.round(r.y * sy);
+    const w = Math.round(r.w * sx);
+    const h = Math.round(r.h * sy);
     ctx.strokeStyle = "rgba(255,0,0,0.9)";
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
@@ -299,7 +311,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     ctx.setLineDash([]);
 });
     if(draft){ctx.strokeStyle="rgba(0,200,255,0.9)"; ctx.lineWidth=2; ctx.setLineDash([4,3]); ctx.strokeRect(draft.x,draft.y,draft.w,draft.h); ctx.setLineDash([]);}
-  },[rects, draft, activeIndex]);
+  },[rects, draft, activeIndex, pageMeta]);
 
   // Drawing handlers (Pointer Events)
   const startRef=useRef(null); const drawingRef=useRef(false);
@@ -324,13 +336,15 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     if (templateFileIdx === null) {
       setTemplateFileIdx(activeIndex);
     }
-    // Store absolute px coordinates
+    // Store coordinates in base (scale=1) PDF units so they remain correct across zoom changes
+    const sx = (overlayRef.current?.width && pageMeta?.width) ? (pageMeta.width / overlayRef.current.width) : 1;
+    const sy = (overlayRef.current?.height && pageMeta?.height) ? (pageMeta.height / overlayRef.current.height) : 1;
     setRects(prev => [...prev, {
       id,
-      x: Math.round(draft.x),
-      y: Math.round(draft.y),
-      w: Math.round(draft.w),
-      h: Math.round(draft.h),
+      x: Math.round(draft.x * sx),
+      y: Math.round(draft.y * sy),
+      w: Math.round(draft.w * sx),
+      h: Math.round(draft.h * sy),
       // NEW: capture the source you drew on
       fileIdx: activeIndex,
       page: (pageMeta?.pageNo ?? 0),
@@ -442,19 +456,19 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 
   // ------- UI -------
   return (
-     <main className="min-h-screen bg-neutral-950 text-neutral-100">
-      <div className="mx-auto max-w-7xl px-4 py-6">
-        <header className="mb-4 flex items-center gap-3">
-          <button className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800" onClick={onBack} type="button">
+     <main className="screen">
+      <div className="wrap">
+        <header className="toolbar">
+          <button className="btn" onClick={onBack} type="button">
             <IconChevronLeft className="h-4 w-4" /> Back
           </button>
-          <h1 className="text-xl font-semibold">Wootz.Sanitize</h1>
-          <span className="text-neutral-500 text-sm">/ New client: {clientName}</span>
+          <h1 className="text-xl font-semibold" style={{margin:0}}>Wootz.Sanitize</h1>
+          <span className="muted" style={{fontSize:12}}>/ New client: {clientName}</span>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid-2">
           {/* LEFT: PDF Viewer */}
-          <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4">
+          <section className="panel section">
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm text-neutral-300">
                 Preview: <span className="text-neutral-100 font-medium">{file ? file.name : "No file"}</span>
@@ -489,7 +503,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                 <button
                   type="button"
                   onClick={() => setPageIndex(p => Math.max(0, p - 1))}
-                  className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+                  className="btn"
                   disabled={pageIndex <= 0}
                 >
                   ← Prev
@@ -502,7 +516,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                 <button
                   type="button"
                   onClick={() => setPageIndex(p => Math.min(pageCount - 1, p + 1))}
-                  className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800"
+                  className="btn"
                   disabled={pageIndex >= pageCount - 1}
                 >
                   Next →
@@ -592,7 +606,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
           </section>
 
           {/* RIGHT: Tools */}
-          <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4 space-y-6">
+          <section className="panel section">
             {/* Stepper */}
             <div className="flex items-center gap-2 text-xs">
               <button type="button" onClick={()=>setStep(1)} className={`px-2 py-1 rounded ${step===1?"bg-neutral-700":"bg-neutral-800 hover:bg-neutral-700"}`}>1. Rectangles</button>
@@ -693,7 +707,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                 )}
 
                 <div className="mt-4 flex justify-end">
-                  <button type="button" onClick={()=>setStep(2)} className="rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700">
+                  <button type="button" onClick={()=>setStep(2)} className="btn">
                     Next: Text & Run →
                   </button>
                 </div>
@@ -729,16 +743,12 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                            className="rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs"/>
                   </div>
                   <div className="flex gap-2">
-                    <button type="button" onClick={()=>setStep(1)} className="rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700">← Back</button>
+                    <button type="button" onClick={()=>setStep(1)} className="btn">← Back</button>
                     <button
                       type="button"
                       onClick={runSanitization}
                       disabled={!canProceed}
-                      className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border ${
-                        canProceed
-                          ? "border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500"
-                          : "border-neutral-800 bg-neutral-900 text-neutral-500 cursor-not-allowed"
-                      }`}
+                      className={`btn btn-primary`}
                     >
                       <IconCheck /> Run Sanitization
                     </button>
@@ -1092,66 +1102,81 @@ export default function App() {
   }
 
   return (
-   <main className="min-h-screen bg-neutral-950 text-neutral-100">
-      <div className="mx-auto max-w-4xl px-4 py-10">
-        <header className="mb-8">
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Wootz.Sanitize</h1>
-          <p className="mt-1 text-sm text-neutral-400">Add engineering drawings/files and select a client to proceed</p>
+    <main className="home">
+      <div className="container">
+        <header className="brand">
+          <h1 className="title">Wootz.Sanitize</h1>
+          <p className="subtitle">Upload PDF drawings and select an existing template or create a new one</p>
         </header>
 
-        <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 shadow-xl">
-          <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6">
-            <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 items-stretch sm:items-end">
-              <div className="flex-1">
-                <label className="block text-sm mb-1 text-neutral-300">Files <span className="text-rose-500" aria-hidden="true">*</span></label>
-                <div className="flex items-center gap-3">
-                  <button type="button" onClick={onPickFiles} className="inline-flex items-center gap-2 rounded-2xl border border-neutral-700 bg-neutral-800 px-4 py-2 text-sm hover:bg-neutral-750 active:scale-[0.99] transition">
-                    <IconUploadCloud /> Upload files
+        <section className="card section">
+          <form onSubmit={handleSubmit}>
+            <div className="row">
+              <div>
+                <label className="label">Files <span style={{color: 'var(--danger)'}}>*</span></label>
+                <div style={{display:'flex', alignItems:'center', gap:12}}>
+                  <button type="button" onClick={onPickFiles} className="btn">
+                    <IconUploadCloud /> Upload PDFs
                   </button>
-                  <span className="text-xs text-neutral-400">{files.length>0?`${files.length} selected`:"PDFs only"}</span>
+                  <span className="muted">{files.length>0?`${files.length} selected`:"PDFs only"}</span>
                 </div>
                 <input ref={fileInputRef} type="file" className="hidden" multiple accept="application/pdf,.pdf" onChange={onFileChange} />
-              </div>
 
-              <div className="sm:w-80"><SearchableClientDropdown value={clientChoice} onChange={setClientChoice} options={existingClients} /></div>
+                {/* Drag & drop removed by request; upload via button only */}
+
+                {files.length>0 && (
+                  <div className="filelist">
+                    <h3>Selected files</h3>
+                    <ul className="files">
+                      {files.map((f, idx) => (
+                        <li key={`${f.name}-${idx}`} className="file">
+                          <div style={{display:'flex', alignItems:'center', minWidth:0}}>
+                            <span className="name">{f.name}</span>
+                            <span className="meta">{(f.size/1024).toFixed(0)} KB</span>
+                          </div>
+                          <button type="button" className="btn remove" title="Remove"
+                                  onClick={()=>setFiles(prev=>prev.filter((_,i)=>i!==idx))}>
+                            <IconX /> Remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="template" style={{marginTop: 18}}>
+                  <label className="label">Template</label>
+                  <select
+                    className="select"
+                    value={clientChoice}
+                    onChange={(e)=> setClientChoice(e.target.value)}
+                  >
+                    <option value="" disabled>Select a template…</option>
+                    <option value="new">Create new template…</option>
+                    {existingClients.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {clientChoice === 'new' && (
+                  <div style={{marginTop:14}}>
+                    <label className="label">New template name</label>
+                    <input
+                      type="text"
+                      value={newClientName}
+                      onChange={e=>setNewClientName(e.target.value)}
+                      placeholder="Name this template"
+                      className="select"
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
-            {clientChoice==="new"&&(
-              <div className="sm:w-[28rem]">
-                <label className="block text-sm mb-1 text-neutral-300">New client name</label>
-                <input type="text" value={newClientName} onChange={e=>setNewClientName(e.target.value)} placeholder="Enter client name"
-                       className="w-full rounded-2xl border border-neutral-700 bg-neutral-800 px-4 py-2 text-sm placeholder:text-neutral-500"/>
-              </div>
-            )}
-
-            <div onDrop={onDrop} onDragOver={onDragOver} className="rounded-2xl border border-dashed border-neutral-700 bg-neutral-900/40 p-6 text-center hover:border-neutral-600">
-              <p className="text-sm text-neutral-300">Drag & drop PDF files here</p>
-              <p className="mt-1 text-xs text-neutral-500">or use the Upload button above</p>
-            </div>
-
-            {files.length>0&&(
-              <div className="space-y-2">
-                <h3 className="text-sm font-medium text-neutral-300">Selected files</h3>
-                <ul className="divide-y divide-neutral-800 rounded-xl border border-neutral-800 overflow-hidden">
-                  {files.map((f,idx)=>(
-                    <li key={`${f.name}-${idx}`} className="flex items-center justify-between gap-3 bg-neutral-900/30 px-4 py-2">
-                      <div className="truncate text-sm"><span className="truncate font-medium text-neutral-200">{f.name}</span>
-                        <span className="ml-2 text-neutral-500 text-xs">{(f.size/1024).toFixed(0)} KB</span></div>
-                      <button type="button" onClick={()=>setFiles(prev=>prev.filter((_,i)=>i!==idx))}
-                              className="inline-flex items-center gap-1 rounded-xl border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800" title="Remove">
-                        <IconX /> Remove
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <div className="pt-2">
-              <button type="submit" disabled={!canSubmit}
-                      className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border ${canSubmit?"border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500":"border-neutral-800 bg-neutral-900 text-neutral-500 cursor-not-allowed"}`}
-                      title={!canSubmit?"Select PDF(s) and choose client first":"Submit"}>
-                <IconCheck /> Submit
+            <div className="footer">
+              <button type="submit" className="btn btn-primary" disabled={!canSubmit} title={!canSubmit?"Select PDF(s) and choose or name a template":"Submit"}>
+                <IconCheck /> Continue
               </button>
             </div>
           </form>
