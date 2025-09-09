@@ -56,6 +56,26 @@ def dedupe_text_pages(pages_text: list[str]) -> str:
                 out.append(line.strip())
     return "\n".join(out)
 
+def _norm_phrase(s: str) -> str:
+    # conservative normalization: trim and collapse whitespace; keep case if your matching is case-sensitive
+    return " ".join(s.split()).strip() if isinstance(s, str) else s
+
+def _augment_manual_names_from_replacements(
+    manual_names: list[str] | None,
+    text_replacements: dict[str, str] | None,
+) -> list[str]:
+    base = manual_names or []
+    if not text_replacements:
+        # nothing to augment
+        return base
+
+    # collect all replacement keys that actually have a replacement string
+    rep_keys = [k for k, v in text_replacements.items() if isinstance(k, str) and v is not None]
+
+    # normalize + dedupe with tiny, deterministic set()
+    merged = {_norm_phrase(x) for x in (list(base) + rep_keys) if _norm_phrase(x)}
+    return sorted(merged)
+
 
 def process_batch(
     pdf_paths: list[str],
@@ -327,6 +347,10 @@ def process_batch(
         doc.close()
 
     # ── Step 3: Collect manual-name redaction rectangles + replacement info ──
+        # normalize manual_names and replacement keys to lowercase
+        manual_names = [n.lower().strip() for n in (manual_names or [])]
+        manual_names = _augment_manual_names_from_replacements(manual_names, text_replacements)
+
         if not secondary:
             manual_rects, manual_rep_data = collect_manual_replacements(
                 pdf,
