@@ -405,7 +405,18 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
   const onPointerUp=e=>{if(!drawingRef.current) return; e.preventDefault(); drawingRef.current=false;
     overlayRef.current.releasePointerCapture?.(e.pointerId);
     if(!draft||draft.w<4||draft.h<4){setDraft(null);setConfirmUI(null);return;}
-    setConfirmUI({left:draft.x+draft.w + 8, top:draft.y+draft.h + 8});};
+    // Place confirm/cancel near the released rectangle, clamped to stay in view
+    const ov = overlayRef.current;
+    const pad = 8;
+    const approxW = 220; // approximate panel width
+    const approxH = 44;  // approximate panel height
+    let left = draft.x + draft.w + pad;
+    let top  = draft.y + draft.h + pad;
+    if (ov) {
+      left = Math.max(pad, Math.min(left, (ov.width || 0) - approxW - pad));
+      top  = Math.max(pad, Math.min(top,  (ov.height || 0) - approxH - pad));
+    }
+    setConfirmUI({left, top});};
 
   const confirmDraft=()=>{
     if (!overlayRef.current || !draft) return;
@@ -1664,6 +1675,7 @@ export default function App() {
     </main>
   );
 }
+
 
 
 
