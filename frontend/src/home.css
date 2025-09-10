@@ -188,9 +188,9 @@
 .screen, .screen * { box-sizing: border-box; }
 .screen .wrap {
   width: 100%;
-  max-width: 1400px;
+  max-width: clamp(1100px, 96vw, 1800px);
   margin: 0 auto;
-  padding: 12px 10px 12px;
+  padding: 12px 8px 12px;
 }
 .screen .panel {
   background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0) 40%), var(--card);
@@ -198,7 +198,7 @@
   border-radius: 16px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
 }
-.screen .section { padding: 20px; }
+.screen .section { padding: 16px; }
 .screen .grid-2 {
   display: grid;
   gap: 20px;
