@@ -94,16 +94,54 @@ def get_sensitive_terms_from_llm(
 
         js   = resp.json()
         text = js["candidates"][0]["content"]["parts"][0]["text"]
+
+        # Normalize common wrappers like ```json ... ```, leading 'json' labels, etc.
+        raw = (text or "").strip()
+        # Strip markdown code fences ```json ... ``` or ``` ... ```
+        if raw.startswith("```"):
+            raw = raw.strip("`")  # remove backticks
+            # Sometimes leading language label remains like json[ ...
+        # Remove a leading language tag like 'json' or 'JSON' before the array
+        raw = re.sub(r"^\s*(?i:json)\s*", "", raw)
+        # If there's surrounding text, try to extract the first JSON array
+        m = re.search(r"\[.*\]", raw, flags=re.S)
+        candidate = m.group(0) if m else raw
+
+        # Try strict JSON parse first
+        terms: list[str] = []
         try:
-            terms = json.loads(text)
-        except json.JSONDecodeError:
-            # fallback splitter
-            cleaned = text.strip().strip("[]")
-            terms = [t.strip().strip('"') 
-                     for t in cleaned.split(",") if t.strip()]
+            parsed = json.loads(candidate)
+            if isinstance(parsed, list):
+                terms = [str(x) for x in parsed]
+            else:
+                # If the model returned an object with a key like terms, try to pull it out
+                if isinstance(parsed, dict):
+                    maybe = parsed.get("terms") or parsed.get("sensitive_terms")
+                    if isinstance(maybe, list):
+                        terms = [str(x) for x in maybe]
+        except Exception:
+            # Fallback: split by commas inside the bracketed section
+            cleaned = candidate.strip()
+            cleaned = cleaned.strip().lstrip("json").lstrip("JSON").strip()
+            cleaned = cleaned.strip().strip("[]")
+            parts = [p for p in cleaned.split(",") if p.strip()]
+            terms = [p.strip().strip('"').strip("'").strip() for p in parts]
 
         if isinstance(terms, list):
-            detected.extend(terms)
+            # Final per-term normalization to remove any lingering quotes/backticks
+            normed = []
+            for t in terms:
+                if t is None:
+                    continue
+                s = str(t).strip()
+                # remove surrounding quotes repeatedly
+                while (len(s) >= 2) and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+                    s = s[1:-1].strip()
+                # trim leftover backticks/spaces
+                s = s.strip("` ")
+                if s:
+                    normed.append(s)
+            detected.extend(normed)
 
     # dedupe and return
     return list(dict.fromkeys(detected))
