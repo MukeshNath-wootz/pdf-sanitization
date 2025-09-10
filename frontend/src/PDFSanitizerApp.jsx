@@ -1299,14 +1299,6 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
                      <div className="space-y-2">
                        <div className="flex items-center justify-between">
                          <h3 className="text-xs font-medium text-neutral-300">Terms ({llmTerms.length})</h3>
-                         <button
-                           type="button"
-                           onClick={addNewLlmTerm}
-                           className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
-                         >
-                           <IconPlus className="h-3 w-3" />
-                           Add Term
-                         </button>
                        </div>
    
                        <div className="max-h-60 overflow-y-auto space-y-2">
@@ -1354,6 +1346,16 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
                            ))
                          )}
                        </div>
+                       <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={addNewLlmTerm}
+                            className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                          >
+                            <IconPlus className="h-3 w-3" />
+                            Add Term
+                          </button>
+                        </div>
                      </div>
                    </div>
    
@@ -1662,5 +1664,6 @@ export default function App() {
     </main>
   );
 }
+
 
 
