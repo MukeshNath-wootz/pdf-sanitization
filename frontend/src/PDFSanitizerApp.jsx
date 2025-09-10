@@ -584,9 +584,9 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
           <span className="muted" style={{fontSize:12}}>/ New client: {clientName}</span>
         </header>
 
-        <div className="flex gap-4" style={{margin: "0 20px"}}>
-          {/* LEFT: PDF Viewer - 3/4 width */}
-          <section className="panel section" style={{flex: "3", minWidth: 0}}>
+        <div className="grid-2">
+          {/* LEFT: PDF Viewer */}
+          <section className="panel section">
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm text-neutral-300">
                 Preview: <span className="text-neutral-100 font-medium">{file ? file.name : "No file"}</span>
@@ -724,7 +724,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
           </section>
 
           {/* RIGHT: Tools - 1/4 width */}
-          <section className="panel section" style={{flex: "1", minWidth: 0}}>
+          <section className="panel section">
             {/* Stepper */}
             <div className="flex items-center gap-2 text-xs">
               <button type="button" onClick={()=>setStep(1)} className={`px-2 py-1 rounded ${step===1?"bg-neutral-700":"bg-neutral-800 hover:bg-neutral-700"}`}>1. Rectangles</button>
