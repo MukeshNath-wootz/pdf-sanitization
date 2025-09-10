@@ -154,11 +154,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 
  
   // Step 2 inputs
-  const [step,setStep]=useState(1);                     // 1: rectangles; 2: text+run; 3: results
-  const [eraseRaw,setEraseRaw]=useState("");
-  const eraseList=useMemo(()=>parseEraseCSV(eraseRaw),[eraseRaw]);
-  const [replRaw,setReplRaw]=useState("");
-  const replParsed=useMemo(()=>parseReplacementMap(replRaw),[replRaw]);
+  const [step,setStep]=useState(1);                     // 1: rectangles; 2: LLM + run; 3: results
   const [threshold,setThreshold]=useState(0.9);
   const [pageMeta, setPageMeta] = useState(null);
   
@@ -171,10 +167,8 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
  
-  const hasManualErase = Array.isArray(eraseList) && eraseList.length > 0;
-  const hasReplacements = replParsed?.map && Object.keys(replParsed.map).length > 0;
   const hasLlmTerms = Array.isArray(llmTerms) && llmTerms.length > 0;
-  const canProceed = (rects.length > 0) || hasManualErase || hasReplacements || hasLlmTerms;
+  const canProceed = (rects.length > 0) || hasLlmTerms;
 
   // Function to generate sensitive terms using LLM
   async function generateSensitiveTerms() {
@@ -478,11 +472,11 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     });
 
 
-    // Combine manual erase list with LLM terms
-    const allManualNames = [...eraseList];
-    const allTextReplacements = { ...replParsed.map };
-    
-    // Add LLM terms to manual names and replacements
+    // Build manual names and replacements from LLM terms (and manual adds via UI)
+    const allManualNames = [];
+    const allTextReplacements = {};
+
+    // Add LLM/Manual UI terms
     llmTerms.forEach(item => {
       if (item.term && item.term.trim()) {
         const term = item.term.trim();
@@ -584,9 +578,9 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
           <span className="muted" style={{fontSize:12}}>/ New client: {clientName}</span>
         </header>
 
-        <div className="grid-2">
-          {/* LEFT: PDF Viewer */}
-          <section className="panel section">
+        <div className="flex gap-4" style={{margin: "0 20px"}}>
+          {/* LEFT: PDF Viewer - 3/4 width */}
+          <section className="panel section" style={{flex: "3", minWidth: 0}}>
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm text-neutral-300">
                 Preview: <span className="text-neutral-100 font-medium">{file ? file.name : "No file"}</span>
@@ -724,7 +718,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
           </section>
 
           {/* RIGHT: Tools - 1/4 width */}
-          <section className="panel section">
+          <section className="panel section" style={{flex: "1", minWidth: 0}}>
             {/* Stepper */}
             <div className="flex items-center gap-2 text-xs">
               <button type="button" onClick={()=>setStep(1)} className={`px-2 py-1 rounded ${step===1?"bg-neutral-700":"bg-neutral-800 hover:bg-neutral-700"}`}>1. Rectangles</button>
@@ -840,7 +834,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
               <div>
                 {/* Step 2: Text + Run */}
                 
-                {/* LLM Term Generation Section - MOVED TO TOP */}
+                {/* LLM Term Generation Section */}
                 <div className="mb-6 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-sm font-semibold text-neutral-200">Generate sensitive terms using LLM</h2>
@@ -876,15 +870,16 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                       className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs placeholder:text-neutral-500"
                     />
                   </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-medium text-neutral-300">Terms ({llmTerms.length})</h3>
+                    </div>
 
-                  {llmTerms.length > 0 && (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-xs font-medium text-neutral-300">Generated Terms ({llmTerms.length})</h3>
-                      </div>
-                      
-                      <div className="max-h-60 overflow-y-auto space-y-2">
-                        {llmTerms.map((item, index) => (
+                    <div className="max-h-60 overflow-y-auto space-y-2">
+                      {llmTerms.length === 0 ? (
+                        <div className="text-xs text-neutral-400">No terms yet. Add terms manually or generate via LLM.</div>
+                      ) : (
+                        llmTerms.map((item, index) => (
                           <div key={index} className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 p-2">
                             <div className="flex-1 grid grid-cols-2 gap-2">
                               <div>
@@ -917,43 +912,23 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                               <IconX className="h-3 w-3" />
                             </button>
                           </div>
-                        ))}
-                      </div>
-                      
-                      {/* Add Terms Button - MOVED TO BOTTOM */}
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={addNewLlmTerm}
-                          className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
-                        >
-                          <IconPlus className="h-3 w-3" />
-                          Add Term
-                        </button>
-                      </div>
+                        ))
+                      )}
                     </div>
-                  )}
+
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={addNewLlmTerm}
+                        className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                      >
+                        <IconPlus className="h-3 w-3" />
+                        Add Term
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                <h2 className="text-sm font-semibold text-neutral-200 mb-2">Text to be erased</h2>
-                <p className="text-xs text-neutral-500 mb-2">Comma or newline separated phrases to redact.</p>
-                <textarea value={eraseRaw} onChange={e=>setEraseRaw(e.target.value)} rows={4}
-                          placeholder="e.g. ACME LTD, +1-222-333-4444, 221B Baker Street"
-                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
-                <div className="mt-1 text-xs text-neutral-400">Parsed {eraseList.length} item(s): {eraseList.join(", ")||"—"}</div>
-
-                <h2 className="mt-5 text-sm font-semibold text-neutral-200 mb-2">Replacement text map</h2>
-                <p className="text-xs text-neutral-500 mb-2">
-                  Use JSON like <span className="font-mono">&lbrace;&quot;old&quot;:&quot;new&quot;&rbrace;</span> or one pair per line as <span className="font-mono">old:new</span>.
-                </p>
-                <textarea value={replRaw} onChange={e=>setReplRaw(e.target.value)} rows={6}
-                          placeholder='{"Client A":"Wootz","ACME LTD":"Wootz Industries"}'
-                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
-                {replParsed.errors.length>0 ? (
-                  <ul className="mt-2 text-xs text-rose-400 list-disc pl-5">{replParsed.errors.map((er,i)=><li key={i}>{er}</li>)}</ul>
-                ) : (
-                  <div className="mt-1 text-xs text-neutral-400">Parsed map keys: {Object.keys(replParsed.map).length}</div>
-                )}
 
                 <div className="mt-4 flex items-center justify-between gap-3">
                   <div className="text-xs text-neutral-300">
@@ -1297,22 +1272,24 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
                   />
                 </div>
 
-                {llmTerms.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-medium text-neutral-300">Generated Terms ({llmTerms.length})</h3>
-                      <button
-                        type="button"
-                        onClick={addNewLlmTerm}
-                        className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
-                      >
-                        <IconPlus className="h-3 w-3" />
-                        Add Term
-                      </button>
-                    </div>
-                    
-                    <div className="max-h-60 overflow-y-auto space-y-2">
-                      {llmTerms.map((item, index) => (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-medium text-neutral-300">Terms ({llmTerms.length})</h3>
+                    <button
+                      type="button"
+                      onClick={addNewLlmTerm}
+                      className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                    >
+                      <IconPlus className="h-3 w-3" />
+                      Add Term
+                    </button>
+                  </div>
+                  
+                  <div className="max-h-60 overflow-y-auto space-y-2">
+                    {llmTerms.length === 0 ? (
+                      <div className="text-xs text-neutral-400">No terms yet. Add terms manually or generate via LLM.</div>
+                    ) : (
+                      llmTerms.map((item, index) => (
                         <div key={index} className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 p-2">
                           <div className="flex-1 grid grid-cols-2 gap-2">
                             <div>
@@ -1345,10 +1322,10 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
                             <IconX className="h-3 w-3" />
                           </button>
                         </div>
-                      ))}
-                    </div>
+                      ))
+                    )}
                   </div>
-                )}
+                </div>
               </div>
 
               <div className="flex items-center justify-between gap-3">
