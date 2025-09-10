@@ -310,7 +310,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 
 
   const pdfCanvasRef=useRef(null), overlayRef=useRef(null), wrapRef=useRef(null);
-  const [renderScale, setRenderScale] = useState(0.85); // scale down the PDF view while keeping stable coordinates
+  const [renderScale, setRenderScale] = useState(1); // scale down the PDF view while keeping stable coordinates
 
   // Render first page to canvas
   useEffect(()=>{let cancelled=false;
@@ -1664,6 +1664,7 @@ export default function App() {
     </main>
   );
 }
+
 
 
 
