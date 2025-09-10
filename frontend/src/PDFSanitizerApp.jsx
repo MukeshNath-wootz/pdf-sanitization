@@ -161,10 +161,89 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
   const replParsed=useMemo(()=>parseReplacementMap(replRaw),[replRaw]);
   const [threshold,setThreshold]=useState(0.9);
   const [pageMeta, setPageMeta] = useState(null);
+  
+  // LLM term generation states
+  const [llmTerms, setLlmTerms] = useState([]);         // [{term: "ABC", replacement: ""}, ...]
+  const [isGeneratingTerms, setIsGeneratingTerms] = useState(false);
+  const [llmContext, setLlmContext] = useState("");
  
   const hasManualErase = Array.isArray(eraseList) && eraseList.length > 0;
   const hasReplacements = replParsed?.map && Object.keys(replParsed.map).length > 0;
-  const canProceed = (rects.length > 0) || hasManualErase || hasReplacements;
+  const hasLlmTerms = Array.isArray(llmTerms) && llmTerms.length > 0;
+  const canProceed = (rects.length > 0) || hasManualErase || hasReplacements || hasLlmTerms;
+
+  // Function to generate sensitive terms using LLM
+  async function generateSensitiveTerms() {
+    if (!currentFiles.length) {
+      alert("Please add at least one PDF file first.");
+      return;
+    }
+
+    setIsGeneratingTerms(true);
+    try {
+      const form = new FormData();
+      currentFiles.forEach(f => form.append("files", f));
+      if (llmContext.trim()) {
+        form.append("context", llmContext.trim());
+      }
+
+      const res = await fetch(`${API_BASE}/api/generate-sensitive-terms`, {
+        method: "POST",
+        body: form
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to generate sensitive terms");
+      }
+
+      const data = await res.json();
+      const terms = data.sensitive_terms || [];
+      
+      // Convert to UI format: [{term: "ABC", replacement: ""}, ...]
+      const formattedTerms = terms.map(term => ({
+        term: term,
+        replacement: ""
+      }));
+      
+      setLlmTerms(formattedTerms);
+      
+      if (terms.length === 0) {
+        alert("No sensitive terms were detected by the LLM. You may need to add terms manually.");
+      } else {
+        alert(`Generated ${terms.length} sensitive terms. Review and modify them as needed.`);
+      }
+    } catch (error) {
+      console.error("Error generating sensitive terms:", error);
+      alert(`Failed to generate sensitive terms: ${error.message}`);
+    } finally {
+      setIsGeneratingTerms(false);
+    }
+  }
+
+  // Function to update LLM term replacement
+  function updateLlmTermReplacement(index, replacement) {
+    setLlmTerms(prev => prev.map((item, i) => 
+      i === index ? { ...item, replacement } : item
+    ));
+  }
+
+  // Function to remove LLM term
+  function removeLlmTerm(index) {
+    setLlmTerms(prev => prev.filter((_, i) => i !== index));
+  }
+
+  // Function to add new LLM term
+  function addNewLlmTerm() {
+    setLlmTerms(prev => [...prev, { term: "", replacement: "" }]);
+  }
+
+  // Function to update LLM term text
+  function updateLlmTermText(index, term) {
+    setLlmTerms(prev => prev.map((item, i) => 
+      i === index ? { ...item, term } : item
+    ));
+  }
  
   useEffect(() => {
     if (!initialSecondary) return;
@@ -392,9 +471,26 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     });
 
 
+    // Combine manual erase list with LLM terms
+    const allManualNames = [...eraseList];
+    const allTextReplacements = { ...replParsed.map };
+    
+    // Add LLM terms to manual names and replacements
+    llmTerms.forEach(item => {
+      if (item.term && item.term.trim()) {
+        const term = item.term.trim();
+        if (!allManualNames.includes(term)) {
+          allManualNames.push(term);
+        }
+        if (item.replacement && item.replacement.trim()) {
+          allTextReplacements[term] = item.replacement.trim();
+        }
+      }
+    });
+
     form.append("template_zones", JSON.stringify(template_zones));
-    form.append("manual_names", JSON.stringify(eraseList));
-    form.append("text_replacements", JSON.stringify(replParsed.map));
+    form.append("manual_names", JSON.stringify(allManualNames));
+    form.append("text_replacements", JSON.stringify(allTextReplacements));
     form.append("image_map", JSON.stringify(image_map));
     form.append("threshold", String(threshold));
     form.append("client_name", clientName); // ← NEW: tell API which name to save the template under
@@ -735,6 +831,97 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                   <div className="mt-1 text-xs text-neutral-400">Parsed map keys: {Object.keys(replParsed.map).length}</div>
                 )}
 
+                {/* LLM Term Generation Section */}
+                <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-sm font-semibold text-neutral-200">Generate sensitive terms using LLM</h2>
+                    <button
+                      type="button"
+                      onClick={generateSensitiveTerms}
+                      disabled={isGeneratingTerms || !currentFiles.length}
+                      className="inline-flex items-center gap-2 rounded-lg border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isGeneratingTerms ? (
+                        <>
+                          <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <IconPlus className="h-3 w-3" />
+                          Generate Terms
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  
+                  <div className="mb-3">
+                    <label className="text-xs text-neutral-300 mb-1 block">
+                      Custom context (optional)
+                    </label>
+                    <textarea
+                      value={llmContext}
+                      onChange={e => setLlmContext(e.target.value)}
+                      rows={2}
+                      placeholder="Provide additional context for the LLM to better identify sensitive terms..."
+                      className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs placeholder:text-neutral-500"
+                    />
+                  </div>
+
+                  {llmTerms.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-medium text-neutral-300">Generated Terms ({llmTerms.length})</h3>
+                        <button
+                          type="button"
+                          onClick={addNewLlmTerm}
+                          className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                        >
+                          <IconPlus className="h-3 w-3" />
+                          Add Term
+                        </button>
+                      </div>
+                      
+                      <div className="max-h-60 overflow-y-auto space-y-2">
+                        {llmTerms.map((item, index) => (
+                          <div key={index} className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 p-2">
+                            <div className="flex-1 grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-xs text-neutral-400 block mb-1">Term</label>
+                                <input
+                                  type="text"
+                                  value={item.term}
+                                  onChange={e => updateLlmTermText(index, e.target.value)}
+                                  placeholder="Sensitive term"
+                                  className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs text-neutral-400 block mb-1">Replace with</label>
+                                <input
+                                  type="text"
+                                  value={item.replacement}
+                                  onChange={e => updateLlmTermReplacement(index, e.target.value)}
+                                  placeholder="Leave blank to redact"
+                                  className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
+                                />
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeLlmTerm(index)}
+                              className="inline-flex items-center justify-center rounded border border-red-600 bg-red-600 p-1 text-white hover:bg-red-500"
+                              title="Remove term"
+                            >
+                              <IconX className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="mt-4 flex items-center justify-between gap-3">
                   <div className="text-xs text-neutral-300">
                     Threshold:&nbsp;
@@ -825,20 +1012,114 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
   const [threshold, setThreshold] = useState(0.9);
   const [lastZipUrl, setLastZipUrl] = useState("");
   const [lastLowConf, setLastLowConf] = useState([]);
+  
+  // LLM term generation states
+  const [llmTerms, setLlmTerms] = useState([]);         // [{term: "ABC", replacement: ""}, ...]
+  const [isGeneratingTerms, setIsGeneratingTerms] = useState(false);
+  const [llmContext, setLlmContext] = useState("");
 
-  // We’ll ask the parent App to switch to the New Client flow when needed.
+  // We'll ask the parent App to switch to the New Client flow when needed.
   // We'll pass this as a prop shortly.
   const goToNewFlow = typeof onTreatAsNew === "function" ? onTreatAsNew : null;
   const goToSecondary = typeof onProceedSecondary === "function" ? onProceedSecondary : null;
 
+  // Function to generate sensitive terms using LLM
+  async function generateSensitiveTerms() {
+    if (!pdfFiles.length) {
+      alert("Please add at least one PDF file first.");
+      return;
+    }
+
+    setIsGeneratingTerms(true);
+    try {
+      const form = new FormData();
+      pdfFiles.forEach(f => form.append("files", f));
+      if (llmContext.trim()) {
+        form.append("context", llmContext.trim());
+      }
+
+      const res = await fetch(`${API_BASE}/api/generate-sensitive-terms`, {
+        method: "POST",
+        body: form
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to generate sensitive terms");
+      }
+
+      const data = await res.json();
+      const terms = data.sensitive_terms || [];
+      
+      // Convert to UI format: [{term: "ABC", replacement: ""}, ...]
+      const formattedTerms = terms.map(term => ({
+        term: term,
+        replacement: ""
+      }));
+      
+      setLlmTerms(formattedTerms);
+      
+      if (terms.length === 0) {
+        alert("No sensitive terms were detected by the LLM. You may need to add terms manually.");
+      } else {
+        alert(`Generated ${terms.length} sensitive terms. Review and modify them as needed.`);
+      }
+    } catch (error) {
+      console.error("Error generating sensitive terms:", error);
+      alert(`Failed to generate sensitive terms: ${error.message}`);
+    } finally {
+      setIsGeneratingTerms(false);
+    }
+  }
+
+  // Function to update LLM term replacement
+  function updateLlmTermReplacement(index, replacement) {
+    setLlmTerms(prev => prev.map((item, i) => 
+      i === index ? { ...item, replacement } : item
+    ));
+  }
+
+  // Function to remove LLM term
+  function removeLlmTerm(index) {
+    setLlmTerms(prev => prev.filter((_, i) => i !== index));
+  }
+
+  // Function to add new LLM term
+  function addNewLlmTerm() {
+    setLlmTerms(prev => [...prev, { term: "", replacement: "" }]);
+  }
+
+  // Function to update LLM term text
+  function updateLlmTermText(index, term) {
+    setLlmTerms(prev => prev.map((item, i) => 
+      i === index ? { ...item, term } : item
+    ));
+  }
 
   async function runSanitizationExisting() {
     if (!pdfFiles.length) { alert("Please add at least one PDF."); return; }
   
+    // Combine manual erase list with LLM terms
+    const allManualNames = [...eraseList];
+    const allTextReplacements = { ...replParsed.map };
+    
+    // Add LLM terms to manual names and replacements
+    llmTerms.forEach(item => {
+      if (item.term && item.term.trim()) {
+        const term = item.term.trim();
+        if (!allManualNames.includes(term)) {
+          allManualNames.push(term);
+        }
+        if (item.replacement && item.replacement.trim()) {
+          allTextReplacements[term] = item.replacement.trim();
+        }
+      }
+    });
+
     const form = new FormData();
     pdfFiles.forEach(f => form.append("files", f));
-    form.append("manual_names", JSON.stringify(eraseList));
-    form.append("text_replacements", JSON.stringify(replParsed.map));
+    form.append("manual_names", JSON.stringify(allManualNames));
+    form.append("text_replacements", JSON.stringify(allTextReplacements));
     form.append("threshold", String(threshold));
     form.append("client_name", clientName);
     form.append("secondary", "false"); // existing-template primary pass
@@ -924,6 +1205,97 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
                   <ul className="mt-2 text-xs text-rose-400 list-disc pl-5">{replParsed.errors.map((er,i)=><li key={i}>{er}</li>)}</ul>
                 ) : (
                   <div className="mt-1 text-xs text-neutral-400">Parsed map keys: {Object.keys(replParsed.map).length}</div>
+                )}
+              </div>
+
+              {/* LLM Term Generation Section */}
+              <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-neutral-200">Generate sensitive terms using LLM</h2>
+                  <button
+                    type="button"
+                    onClick={generateSensitiveTerms}
+                    disabled={isGeneratingTerms || !pdfFiles.length}
+                    className="inline-flex items-center gap-2 rounded-lg border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isGeneratingTerms ? (
+                      <>
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <IconPlus className="h-3 w-3" />
+                        Generate Terms
+                      </>
+                    )}
+                  </button>
+                </div>
+                
+                <div className="mb-3">
+                  <label className="text-xs text-neutral-300 mb-1 block">
+                    Custom context (optional)
+                  </label>
+                  <textarea
+                    value={llmContext}
+                    onChange={e => setLlmContext(e.target.value)}
+                    rows={2}
+                    placeholder="Provide additional context for the LLM to better identify sensitive terms..."
+                    className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs placeholder:text-neutral-500"
+                  />
+                </div>
+
+                {llmTerms.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-medium text-neutral-300">Generated Terms ({llmTerms.length})</h3>
+                      <button
+                        type="button"
+                        onClick={addNewLlmTerm}
+                        className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                      >
+                        <IconPlus className="h-3 w-3" />
+                        Add Term
+                      </button>
+                    </div>
+                    
+                    <div className="max-h-60 overflow-y-auto space-y-2">
+                      {llmTerms.map((item, index) => (
+                        <div key={index} className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 p-2">
+                          <div className="flex-1 grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-xs text-neutral-400 block mb-1">Term</label>
+                              <input
+                                type="text"
+                                value={item.term}
+                                onChange={e => updateLlmTermText(index, e.target.value)}
+                                placeholder="Sensitive term"
+                                className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-neutral-400 block mb-1">Replace with</label>
+                              <input
+                                type="text"
+                                value={item.replacement}
+                                onChange={e => updateLlmTermReplacement(index, e.target.value)}
+                                placeholder="Leave blank to redact"
+                                className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
+                              />
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeLlmTerm(index)}
+                            className="inline-flex items-center justify-center rounded border border-red-600 bg-red-600 p-1 text-white hover:bg-red-500"
+                            title="Remove term"
+                          >
+                            <IconX className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
 
