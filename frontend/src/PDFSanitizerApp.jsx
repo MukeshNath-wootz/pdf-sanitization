@@ -413,8 +413,10 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     let left = draft.x + draft.w + pad;
     let top  = draft.y + draft.h + pad;
     if (ov) {
-      left = Math.max(pad, Math.min(left, (ov.width || 0) - approxW - pad));
-      top  = Math.max(pad, Math.min(top,  (ov.height || 0) - approxH - pad));
+      const cw = (ov.clientWidth || 0);
+      const ch = (ov.clientHeight || 0);
+      left = Math.max(pad, Math.min(left, cw - approxW - pad));
+      top  = Math.max(pad, Math.min(top, ch - approxH - pad));
     }
     setConfirmUI({left, top});};
 
@@ -1675,6 +1677,7 @@ export default function App() {
     </main>
   );
 }
+
 
 
 
