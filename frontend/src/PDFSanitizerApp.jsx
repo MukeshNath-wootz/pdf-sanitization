@@ -154,7 +154,7 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 
  
   // Step 2 inputs
-  const [step,setStep]=useState(1);                     // 1: rectangles; 2: text+run
+  const [step,setStep]=useState(1);                     // 1: rectangles; 2: text+run; 3: results
   const [eraseRaw,setEraseRaw]=useState("");
   const eraseList=useMemo(()=>parseEraseCSV(eraseRaw),[eraseRaw]);
   const [replRaw,setReplRaw]=useState("");
@@ -166,6 +166,10 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
   const [llmTerms, setLlmTerms] = useState([]);         // [{term: "ABC", replacement: ""}, ...]
   const [isGeneratingTerms, setIsGeneratingTerms] = useState(false);
   const [llmContext, setLlmContext] = useState("");
+  
+  // Processing states
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState(0);
  
   const hasManualErase = Array.isArray(eraseList) && eraseList.length > 0;
   const hasReplacements = replParsed?.map && Object.keys(replParsed.map).length > 0;
@@ -442,6 +446,9 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
   // Build payload + call backend
   async function runSanitization() {
     if (!currentFiles.length) { alert("Please add at least one PDF."); return; }
+    
+    setIsProcessing(true);
+    setProcessingProgress(0);
     // Build zones for ALL rects (multi-PDF template)
     const template_zones = [];
     const image_map = {};                        // index-aligned with template_zones
@@ -498,12 +505,20 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     // form.append("template_source_index", String(templateFileIdx ?? activeIndex));
 
     // Request JSON so we can read low_conf and show an on-demand Download ZIP button
+    setProcessingProgress(50);
     const res = await fetch(`${API_BASE}/api/sanitize`, {
       method: "POST",
       headers: { "Accept": "application/json" },
       body: form
     });
-    if (!res.ok) { alert("Backend error while sanitizing."); return; }
+    setProcessingProgress(100);
+    
+    if (!res.ok) { 
+      setIsProcessing(false);
+      setProcessingProgress(0);
+      alert("Backend error while sanitizing."); 
+      return; 
+    }
     const payload = await res.json();
     
     // Persist low_conf / zip_url for secondary and download UX
@@ -548,6 +563,13 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
     const w = window.open("", "_blank");
     if (w) { w.document.write(`<h3>Sanitized Results</h3><ul>${list}</ul>`); w.document.close(); }
     else { alert("Pop-up blocked. Check console for URLs."); console.log("Sanitized results:", results); }
+    
+    // Processing completed
+    setIsProcessing(false);
+    setProcessingProgress(0);
+    
+    // Switch to results tab
+    setStep(3);
   }
 
   // ------- UI -------
@@ -562,9 +584,9 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
           <span className="muted" style={{fontSize:12}}>/ New client: {clientName}</span>
         </header>
 
-        <div className="grid-2">
-          {/* LEFT: PDF Viewer */}
-          <section className="panel section">
+        <div className="flex gap-4" style={{margin: "0 20px"}}>
+          {/* LEFT: PDF Viewer - 3/4 width */}
+          <section className="panel section" style={{flex: "3", minWidth: 0}}>
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm text-neutral-300">
                 Preview: <span className="text-neutral-100 font-medium">{file ? file.name : "No file"}</span>
@@ -701,13 +723,19 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
             <p className="mt-3 text-xs text-neutral-500">Tip: click–drag on the preview to draw a rectangle. Release to confirm.</p>
           </section>
 
-          {/* RIGHT: Tools */}
-          <section className="panel section">
+          {/* RIGHT: Tools - 1/4 width */}
+          <section className="panel section" style={{flex: "1", minWidth: 0}}>
             {/* Stepper */}
             <div className="flex items-center gap-2 text-xs">
               <button type="button" onClick={()=>setStep(1)} className={`px-2 py-1 rounded ${step===1?"bg-neutral-700":"bg-neutral-800 hover:bg-neutral-700"}`}>1. Rectangles</button>
               <span className="text-neutral-500">→</span>
               <button type="button" onClick={()=>setStep(2)} className={`px-2 py-1 rounded ${step===2?"bg-neutral-700":"bg-neutral-800 hover:bg-neutral-700"}`}>2. Text & Run</button>
+              {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
+                <>
+                  <span className="text-neutral-500">→</span>
+                  <button type="button" onClick={()=>setStep(3)} className={`px-2 py-1 rounded ${step===3?"bg-neutral-700":"bg-neutral-800 hover:bg-neutral-700"}`}>3. Results</button>
+                </>
+              )}
             </div>
 
             {step === 1 ? (
@@ -808,31 +836,12 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : step === 2 ? (
               <div>
                 {/* Step 2: Text + Run */}
-                <h2 className="text-sm font-semibold text-neutral-200 mb-2">Text to be erased</h2>
-                <p className="text-xs text-neutral-500 mb-2">Comma or newline separated phrases to redact.</p>
-                <textarea value={eraseRaw} onChange={e=>setEraseRaw(e.target.value)} rows={4}
-                          placeholder="e.g. ACME LTD, +1-222-333-4444, 221B Baker Street"
-                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
-                <div className="mt-1 text-xs text-neutral-400">Parsed {eraseList.length} item(s): {eraseList.join(", ")||"—"}</div>
-
-                <h2 className="mt-5 text-sm font-semibold text-neutral-200 mb-2">Replacement text map</h2>
-                <p className="text-xs text-neutral-500 mb-2">
-                  Use JSON like <span className="font-mono">&lbrace;&quot;old&quot;:&quot;new&quot;&rbrace;</span> or one pair per line as <span className="font-mono">old:new</span>.
-                </p>
-                <textarea value={replRaw} onChange={e=>setReplRaw(e.target.value)} rows={6}
-                          placeholder='{"Client A":"Wootz","ACME LTD":"Wootz Industries"}'
-                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
-                {replParsed.errors.length>0 ? (
-                  <ul className="mt-2 text-xs text-rose-400 list-disc pl-5">{replParsed.errors.map((er,i)=><li key={i}>{er}</li>)}</ul>
-                ) : (
-                  <div className="mt-1 text-xs text-neutral-400">Parsed map keys: {Object.keys(replParsed.map).length}</div>
-                )}
-
-                {/* LLM Term Generation Section */}
-                <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+                
+                {/* LLM Term Generation Section - MOVED TO TOP */}
+                <div className="mb-6 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-sm font-semibold text-neutral-200">Generate sensitive terms using LLM</h2>
                     <button
@@ -872,14 +881,6 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <h3 className="text-xs font-medium text-neutral-300">Generated Terms ({llmTerms.length})</h3>
-                        <button
-                          type="button"
-                          onClick={addNewLlmTerm}
-                          className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
-                        >
-                          <IconPlus className="h-3 w-3" />
-                          Add Term
-                        </button>
                       </div>
                       
                       <div className="max-h-60 overflow-y-auto space-y-2">
@@ -918,9 +919,41 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                           </div>
                         ))}
                       </div>
+                      
+                      {/* Add Terms Button - MOVED TO BOTTOM */}
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={addNewLlmTerm}
+                          className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                        >
+                          <IconPlus className="h-3 w-3" />
+                          Add Term
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
+
+                <h2 className="text-sm font-semibold text-neutral-200 mb-2">Text to be erased</h2>
+                <p className="text-xs text-neutral-500 mb-2">Comma or newline separated phrases to redact.</p>
+                <textarea value={eraseRaw} onChange={e=>setEraseRaw(e.target.value)} rows={4}
+                          placeholder="e.g. ACME LTD, +1-222-333-4444, 221B Baker Street"
+                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
+                <div className="mt-1 text-xs text-neutral-400">Parsed {eraseList.length} item(s): {eraseList.join(", ")||"—"}</div>
+
+                <h2 className="mt-5 text-sm font-semibold text-neutral-200 mb-2">Replacement text map</h2>
+                <p className="text-xs text-neutral-500 mb-2">
+                  Use JSON like <span className="font-mono">&lbrace;&quot;old&quot;:&quot;new&quot;&rbrace;</span> or one pair per line as <span className="font-mono">old:new</span>.
+                </p>
+                <textarea value={replRaw} onChange={e=>setReplRaw(e.target.value)} rows={6}
+                          placeholder='{"Client A":"Wootz","ACME LTD":"Wootz Industries"}'
+                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
+                {replParsed.errors.length>0 ? (
+                  <ul className="mt-2 text-xs text-rose-400 list-disc pl-5">{replParsed.errors.map((er,i)=><li key={i}>{er}</li>)}</ul>
+                ) : (
+                  <div className="mt-1 text-xs text-neutral-400">Parsed map keys: {Object.keys(replParsed.map).length}</div>
+                )}
 
                 <div className="mt-4 flex items-center justify-between gap-3">
                   <div className="text-xs text-neutral-300">
@@ -934,67 +967,86 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
                     <button
                       type="button"
                       onClick={runSanitization}
-                      disabled={!canProceed}
-                      className={`btn btn-primary`}
+                      disabled={!canProceed || isProcessing}
+                      className={`btn btn-primary ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
-                      <IconCheck /> Run Sanitization
+                      {isProcessing ? (
+                        <>
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent mr-2"></div>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <IconCheck /> Run Sanitization
+                        </>
+                      )}
                     </button>
-                   {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
-                     <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
-                       {lastZipUrl && (
-                         <button
-                           type="button"
-                           className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
-                           onClick={async () => {
-                             try {
-                               // make the URL absolute so it hits the API, not your SPA
-                               const url = absApiUrl(lastZipUrl);
-                               await downloadFile(lastZipUrl, `${clientName}_sanitized_pdfs.zip`);
-                             } catch (e) {
-                               alert("Could not download the ZIP. See console for details.");
-                               console.error(e);
-                             }
-                           }}
-                         >
-                           Download ZIP
-                         </button>
-                       )}
-
-                   
-                       {lastLowConf && lastLowConf.length > 0 && (
-                         <button
-                           type="button"
-                           className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
-                           onClick={() => autoLoadSecondaryFromLowConf(lastLowConf, clientName)}
-                         >
-                           Proceed with secondary process batch
-                         </button>
-                       )}
-                   
-                       {lastLowConf && lastLowConf.length > 0 && (
-                         <div className="mt-3 text-xs text-neutral-400">
-                           <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
-                           <ul className="list-disc pl-5 space-y-1">
-                             {lastLowConf.map((it, idx) => {
-                               const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
-                               const pages = Object.keys(it.low_rects || {}).map(n => Number(n) + 1);
-                               return (
-                                 <li key={idx}>
-                                   <span className="text-neutral-200">{base}</span>
-                                   {pages.length ? ` — pages: ${pages.join(", ")}` : ""}
-                                 </li>
-                               );
-                             })}
-                           </ul>
-                         </div>
-                       )}
-                     </div>
-                   )}
+                    
+                    {/* Progress Bar */}
+                    {isProcessing && (
+                      <div className="mt-4">
+                        <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                          <span>Processing PDFs...</span>
+                          <span>{processingProgress}%</span>
+                        </div>
+                        <div className="w-full bg-neutral-700 rounded-full h-2">
+                          <div 
+                            className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
+                            style={{ width: `${processingProgress}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    )}
 
                   </div>
                 </div>
               </div>
-            )}
+              ) : (
+                <div>
+                  {/* Step 3: Results */}
+                  {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) ? (
+                    <div className="rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
+                      {lastZipUrl && (
+                        <button
+                          type="button"
+                          className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
+                          onClick={async () => { await downloadFile(lastZipUrl, `${clientName}_sanitized_pdfs.zip`); }}
+                        >
+                          Download ZIP
+                        </button>
+                      )}
+                      {lastLowConf && lastLowConf.length > 0 && (
+                        <button
+                          type="button"
+                          className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
+                          onClick={() => autoLoadSecondaryFromLowConf(lastLowConf, clientName)}
+                        >
+                          Proceed with secondary process batch
+                        </button>
+                      )}
+                      {lastLowConf && lastLowConf.length > 0 && (
+                        <div className="mt-3 text-xs text-neutral-400">
+                          <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
+                          <ul className="list-disc pl-5 space-y-1">
+                            {lastLowConf.map((it, idx) => {
+                              const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
+                              const pages = Object.keys(it.low_rects || {}).map(n => Number(n) + 1);
+                              return (
+                                <li key={idx}>
+                                  <span className="text-neutral-200">{base}</span>
+                                  {pages.length ? ` — pages: ${pages.join(", ")}` : ""}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-neutral-400">No results to display yet.</div>
+                  )}
+                </div>
+              )}
           </section>
         </div>
       </div>
