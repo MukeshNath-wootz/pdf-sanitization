@@ -1032,18 +1032,26 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
 /* ================== Existing Client Page (unchanged placeholder) ================== */
 function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProceedSecondary }) {
   const [mode, setMode] = useState("use-existing"); // 'use-existing' | 'treat-as-new'
-  const [eraseRaw, setEraseRaw] = useState("");
-  const eraseList = useMemo(() => parseEraseCSV(eraseRaw), [eraseRaw]);
-  const [replRaw, setReplRaw] = useState("");
-  const replParsed = useMemo(() => parseReplacementMap(replRaw), [replRaw]);
+
+  // Stepper: 1: Text & Run; 2: Results
+  const [step, setStep] = useState(2);
+
   const [threshold, setThreshold] = useState(0.9);
   const [lastZipUrl, setLastZipUrl] = useState("");
   const [lastLowConf, setLastLowConf] = useState([]);
-  
+
   // LLM term generation states
-  const [llmTerms, setLlmTerms] = useState([]);         // [{term: "ABC", replacement: ""}, ...]
+  const [llmTerms, setLlmTerms] = useState([]); // [{term, replacement}]
   const [isGeneratingTerms, setIsGeneratingTerms] = useState(false);
   const [llmContext, setLlmContext] = useState("");
+
+  // Processing states
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState(0);
+
+  // Gate run with canProceed (Existing: LLM terms only)
+  const hasLlmTerms = Array.isArray(llmTerms) && llmTerms.length > 0;
+  const canProceed = hasLlmTerms;
 
   // We'll ask the parent App to switch to the New Client flow when needed.
   // We'll pass this as a prop shortly.
@@ -1126,11 +1134,10 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
   async function runSanitizationExisting() {
     if (!pdfFiles.length) { alert("Please add at least one PDF."); return; }
   
-    // Combine manual erase list with LLM terms
-    const allManualNames = [...eraseList];
-    const allTextReplacements = { ...replParsed.map };
-    
-    // Add LLM terms to manual names and replacements
+    // Build manual names and replacements from LLM terms only (no separate text/replacements UI)
+    const allManualNames = [];
+    const allTextReplacements = {};
+
     llmTerms.forEach(item => {
       if (item.term && item.term.trim()) {
         const term = item.term.trim();
@@ -1143,260 +1150,329 @@ function ExistingClientPage({ pdfFiles, clientName, onBack, onTreatAsNew, onProc
       }
     });
 
+    // Progress start
+    setIsProcessing(true);
+    setProcessingProgress(20);
+  
     const form = new FormData();
     pdfFiles.forEach(f => form.append("files", f));
     form.append("manual_names", JSON.stringify(allManualNames));
     form.append("text_replacements", JSON.stringify(allTextReplacements));
     form.append("threshold", String(threshold));
     form.append("client_name", clientName);
-    form.append("secondary", "false"); // existing-template primary pass
+    form.append("secondary", "false");
   
+    setProcessingProgress(50);
     const res = await fetch(`${API_BASE}/api/sanitize-existing`, {
       method: "POST",
-      headers: { "Accept": "application/json" },  // ⬅ ask for JSON (zip_url + low_conf)
+      headers: { "Accept": "application/json" },
       body: form
     });
-    if (!res.ok) { alert("Backend error while sanitizing."); return; }
+  
+    setProcessingProgress(100);
+  
+    if (!res.ok) {
+      setIsProcessing(false);
+      setProcessingProgress(0);
+      alert("Backend error while sanitizing.");
+      return;
+    }
     const payload = await res.json();
   
     if (payload.template_id) console.log("Using template:", payload.template_id);
   
-    // Save for UI like New Client page
     const lowConf = Array.isArray(payload.low_conf) ? payload.low_conf : [];
     setLastLowConf(lowConf);
-    setLastZipUrl(payload.zip_url ? absApiUrl(payload.zip_url) : "");
+    setLastZipUrl(payload.zip_url ? (absApiUrl(payload.zip_url)) : "");
+  
+    // Finish & jump to Results tab
+    setIsProcessing(false);
+    setProcessingProgress(0);
+    setStep(3);
   }
 
 
   return (
-     <main className="min-h-screen bg-neutral-950 text-neutral-100">
-      <div className="mx-auto max-w-4xl px-4 py-6">
-        <header className="mb-4 flex items-center gap-3">
-          <button className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800" onClick={onBack} type="button">
-            <IconChevronLeft className="h-4 w-4" /> Back
-          </button>
-          <h1 className="text-xl font-semibold">Wootz.Sanitize</h1>
-          <span className="text-neutral-500 text-sm">/ Existing client: {clientName}</span>
-        </header>
-
-        <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-6 space-y-5">
-          <div className="text-xs text-neutral-500">Uploaded PDFs: {pdfFiles.map((f)=>f.name).join(", ")}</div>
-
-          {/* Mode picker */}
-          <div className="grid sm:grid-cols-2 gap-3">
-            <label className="text-xs text-neutral-300">
-              Choose mode
-              <select
-                className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs"
-                value={mode}
-                onChange={(e)=>setMode(e.target.value)}
-              >
-                <option value="use-existing">Run sanitization using the existing template</option>
-                <option value="treat-as-new">Run sanitization, considering this existing client as a new client</option>
-              </select>
-            </label>
-          </div>
-
-          {/* If user wants to treat as new, we route to the New Client (rectangles) flow */}
-          {mode === "treat-as-new" ? (
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                onClick={()=>{ if (goToNewFlow) goToNewFlow(); }}
-                className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-amber-600 bg-amber-500 text-black hover:bg-amber-400"
-              >
-                <IconCheck /> Continue to New Client Flow
-              </button>
-            </div>
-          ) : (
-            <>
-              {/* Existing behavior (Text & Run) */}
-              <div>
-                <h2 className="text-sm font-semibold text-neutral-200 mb-2">Text to be erased</h2>
-                <p className="text-xs text-neutral-500 mb-2">Comma or newline separated phrases to redact.</p>
-                <textarea value={eraseRaw} onChange={e=>setEraseRaw(e.target.value)} rows={4}
-                          placeholder="e.g. ACME LTD, +1-222-333-4444, 221B Baker Street"
-                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
-                <div className="mt-1 text-xs text-neutral-400">Parsed {eraseList.length} item(s): {eraseList.join(", ")||"—"}</div>
-              </div>
-
-              <div>
-                <h2 className="text-sm font-semibold text-neutral-200 mb-2">Replacement text map</h2>
-                <p className="text-xs text-neutral-500 mb-2">
-                  Use JSON like <span className="font-mono">&lbrace;&quot;old&quot;:&quot;new&quot;&rbrace;</span> or one pair per line as <span className="font-mono">old:new</span>.
-                </p>
-                <textarea value={replRaw} onChange={e=>setReplRaw(e.target.value)} rows={6}
-                          placeholder='{"Client A":"Wootz","ACME LTD":"Wootz Industries"}'
-                          className="w-full rounded-xl border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm placeholder:text-neutral-500"/>
-               {replParsed.errors.length>0 ? (
-                  <ul className="mt-2 text-xs text-rose-400 list-disc pl-5">{replParsed.errors.map((er,i)=><li key={i}>{er}</li>)}</ul>
-                ) : (
-                  <div className="mt-1 text-xs text-neutral-400">Parsed map keys: {Object.keys(replParsed.map).length}</div>
-                )}
-              </div>
-
-              {/* LLM Term Generation Section */}
-              <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-sm font-semibold text-neutral-200">Generate sensitive terms using LLM</h2>
-                  <button
-                    type="button"
-                    onClick={generateSensitiveTerms}
-                    disabled={isGeneratingTerms || !pdfFiles.length}
-                    className="inline-flex items-center gap-2 rounded-lg border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isGeneratingTerms ? (
-                      <>
-                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <IconPlus className="h-3 w-3" />
-                        Generate Terms
-                      </>
-                    )}
-                  </button>
-                </div>
-                
-                <div className="mb-3">
-                  <label className="text-xs text-neutral-300 mb-1 block">
-                    Custom context (optional)
-                  </label>
-                  <textarea
-                    value={llmContext}
-                    onChange={e => setLlmContext(e.target.value)}
-                    rows={2}
-                    placeholder="Provide additional context for the LLM to better identify sensitive terms..."
-                    className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs placeholder:text-neutral-500"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-medium text-neutral-300">Terms ({llmTerms.length})</h3>
-                    <button
-                      type="button"
-                      onClick={addNewLlmTerm}
-                      className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
-                    >
-                      <IconPlus className="h-3 w-3" />
-                      Add Term
-                    </button>
-                  </div>
-                  
-                  <div className="max-h-60 overflow-y-auto space-y-2">
-                    {llmTerms.length === 0 ? (
-                      <div className="text-xs text-neutral-400">No terms yet. Add terms manually or generate via LLM.</div>
-                    ) : (
-                      llmTerms.map((item, index) => (
-                        <div key={index} className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 p-2">
-                          <div className="flex-1 grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="text-xs text-neutral-400 block mb-1">Term</label>
-                              <input
-                                type="text"
-                                value={item.term}
-                                onChange={e => updateLlmTermText(index, e.target.value)}
-                                placeholder="Sensitive term"
-                                className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-xs text-neutral-400 block mb-1">Replace with</label>
-                              <input
-                                type="text"
-                                value={item.replacement}
-                                onChange={e => updateLlmTermReplacement(index, e.target.value)}
-                                placeholder="Leave blank to redact"
-                                className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
-                              />
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => removeLlmTerm(index)}
-                            className="inline-flex items-center justify-center rounded border border-red-600 bg-red-600 p-1 text-white hover:bg-red-500"
-                            title="Remove term"
-                          >
-                            <IconX className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-xs text-neutral-300">
-                  Threshold:&nbsp;
-                  <input type="number" step="0.01" min="0" max="1" value={threshold}
-                         onChange={e=>setThreshold(parseFloat(e.target.value)||0)}
-                         className="rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs"/>
-                </div>
-                <button type="button" onClick={runSanitizationExisting}
-                        className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500">
-                  <IconCheck /> Run Sanitization
-                </button>
-                {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
-                  <div className="mt-4 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
-                    {lastZipUrl && (
-                      <button
-                        type="button"
-                        className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
-                        onClick={async () => {
-                          try {
-                            await downloadFile(lastZipUrl, `${clientName}_sanitized_pdfs.zip`);
-                          } catch (e) {
-                            alert("Could not download the ZIP. See console for details.");
-                            console.error(e);
-                          }
-                        }}
-                      >
-                        Download ZIP
-                      </button>
-                    )}
-                
-                    {(lastLowConf && lastLowConf.length > 0) && (
-                      <button
-                        type="button"
-                        className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
-                        onClick={() => {
-                          // Hand the low-conf batch to parent so we can jump into the drawing screen
-                          if (goToSecondary) {
-                            goToSecondary(lastLowConf, clientName);;
-                          } else {
-                            alert("Secondary hand-off not wired in App()");
-                          }
-                        }}
-                      >
-                        Proceed with secondary process batch
-                      </button>
-                    )}
-                
-                    {(lastLowConf && lastLowConf.length > 0) && (
-                      <div className="mt-3 text-xs text-neutral-400">
-                        <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
-                        <ul className="list-disc pl-5 space-y-1">
-                          {lastLowConf.map((it, idx) => {
-                            const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
-                            const pages = Object.keys(it.low_rects || {}).map(n => Number(n) + 1);
-                            return (
-                              <li key={idx}>
-                                <span className="text-neutral-200">{base}</span>
-                                {pages.length ? ` — pages: ${pages.join(", ")}` : ""}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+     <main className="screen">
+       <div className="wrap">
+         <header className="toolbar">
+           <button className="btn" onClick={onBack} type="button">
+             <IconChevronLeft className="h-4 w-4" /> Back
+           </button>
+           <h1 className="text-xl font-semibold" style={{ margin: 0 }}>Wootz.Sanitize</h1>
+           <span className="muted" style={{ fontSize: 12 }}>/ Existing client: {clientName}</span>
+         </header>
+   
+         <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-6 space-y-5">
+           <div className="text-xs text-neutral-500">
+             Uploaded PDFs: {pdfFiles.map((f) => f.name).join(", ")}
+           </div>
+   
+           {/* Mode picker */}
+           <div className="grid sm:grid-cols-2 gap-3">
+             <label className="text-xs text-neutral-300">
+               Choose mode
+               <select
+                 className="mt-1 w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs"
+                 value={mode}
+                 onChange={(e) => setMode(e.target.value)}
+               >
+                 <option value="use-existing">Run sanitization using the existing template</option>
+                 <option value="treat-as-new">Run sanitization, considering this existing client as a new client</option>
+               </select>
+             </label>
+           </div>
+   
+           {mode === "treat-as-new" ? (
+             <div className="flex items-center justify-end">
+               <button
+                 type="button"
+                 onClick={() => { if (goToNewFlow) goToNewFlow(); }}
+                 className="inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-amber-600 bg-amber-500 text-black hover:bg-amber-400"
+               >
+                 <IconCheck /> Continue to New Client Flow
+               </button>
+             </div>
+           ) : (
+             <>
+               {/* Two-tab stepper */}
+               <div className="flex items-center gap-2 text-xs">
+                 <button
+                   type="button"
+                   onClick={() => setStep(2)}
+                   className={`px-2 py-1 rounded ${step === 2 ? "bg-neutral-700" : "bg-neutral-800 hover:bg-neutral-700"}`}
+                 >
+                   1. Text &amp; Run
+                 </button>
+                 {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) && (
+                   <>
+                     <span className="text-neutral-500">→</span>
+                     <button
+                       type="button"
+                       onClick={() => setStep(3)}
+                       className={`px-2 py-1 rounded ${step === 3 ? "bg-neutral-700" : "bg-neutral-800 hover:bg-neutral-700"}`}
+                     >
+                       2. Results
+                     </button>
+                   </>
+                 )}
+               </div>
+   
+               {/* ---- TAB: Text & Run (LLM-only) ---- */}
+               {step === 2 && (
+                 <>
+                   {/* LLM Term Generation */}
+                   <div className="mt-2 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+                     <div className="flex items-center justify-between mb-3">
+                       <h2 className="text-sm font-semibold text-neutral-200">Generate sensitive terms using LLM</h2>
+                       <button
+                         type="button"
+                         onClick={generateSensitiveTerms}
+                         disabled={isGeneratingTerms || !pdfFiles.length}
+                         className="inline-flex items-center gap-2 rounded-lg border border-blue-600 bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                       >
+                         {isGeneratingTerms ? (
+                           <>
+                             <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+                             Generating...
+                           </>
+                         ) : (
+                           <>
+                             <IconPlus className="h-3 w-3" />
+                             Generate Terms
+                           </>
+                         )}
+                       </button>
+                     </div>
+   
+                     <div className="mb-3">
+                       <label className="text-xs text-neutral-300 mb-1 block">Custom context (optional)</label>
+                       <textarea
+                         value={llmContext}
+                         onChange={(e) => setLlmContext(e.target.value)}
+                         rows={2}
+                         placeholder="Provide additional context for the LLM to better identify sensitive terms..."
+                         className="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs placeholder:text-neutral-500"
+                       />
+                     </div>
+   
+                     <div className="space-y-2">
+                       <div className="flex items-center justify-between">
+                         <h3 className="text-xs font-medium text-neutral-300">Terms ({llmTerms.length})</h3>
+                         <button
+                           type="button"
+                           onClick={addNewLlmTerm}
+                           className="inline-flex items-center gap-1 rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-600"
+                         >
+                           <IconPlus className="h-3 w-3" />
+                           Add Term
+                         </button>
+                       </div>
+   
+                       <div className="max-h-60 overflow-y-auto space-y-2">
+                         {llmTerms.length === 0 ? (
+                           <div className="text-xs text-neutral-400">
+                             No terms yet. Add terms manually or generate via LLM.
+                           </div>
+                         ) : (
+                           llmTerms.map((item, index) => (
+                             <div
+                               key={index}
+                               className="flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-800 p-2"
+                             >
+                               <div className="flex-1 grid grid-cols-2 gap-2">
+                                 <div>
+                                   <label className="text-xs text-neutral-400 block mb-1">Term</label>
+                                   <input
+                                     type="text"
+                                     value={item.term}
+                                     onChange={(e) => updateLlmTermText(index, e.target.value)}
+                                     placeholder="Sensitive term"
+                                     className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
+                                   />
+                                 </div>
+                                 <div>
+                                   <label className="text-xs text-neutral-400 block mb-1">Replace with</label>
+                                   <input
+                                     type="text"
+                                     value={item.replacement}
+                                     onChange={(e) => updateLlmTermReplacement(index, e.target.value)}
+                                     placeholder="Leave blank to redact"
+                                     className="w-full rounded border border-neutral-600 bg-neutral-700 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-500"
+                                   />
+                                 </div>
+                               </div>
+                               <button
+                                 type="button"
+                                 onClick={() => removeLlmTerm(index)}
+                                 className="inline-flex items-center justify-center rounded border border-red-600 bg-red-600 p-1 text-white hover:bg-red-500"
+                                 title="Remove term"
+                               >
+                                 <IconX className="h-3 w-3" />
+                               </button>
+                             </div>
+                           ))
+                         )}
+                       </div>
+                     </div>
+                   </div>
+   
+                   {/* Threshold + Run + Progress */}
+                   <div className="flex items-center justify-between gap-3 mt-3">
+                     <div className="text-xs text-neutral-300">
+                       Threshold:&nbsp;
+                       <input
+                         type="number"
+                         step="0.01"
+                         min="0"
+                         max="1"
+                         value={threshold}
+                         onChange={(e) => setThreshold(parseFloat(e.target.value) || 0)}
+                         className="rounded-lg border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs"
+                       />
+                     </div>
+   
+                     <button
+                       type="button"
+                       onClick={runSanitizationExisting}
+                       disabled={!canProceed || isProcessing}
+                       className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm transition border border-emerald-700 bg-emerald-600 text-white hover:bg-emerald-500 ${
+                         (!canProceed || isProcessing) ? "opacity-50 cursor-not-allowed" : ""
+                       }`}
+                     >
+                       {isProcessing ? (
+                         <>
+                           <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+                           Processing...
+                         </>
+                       ) : (
+                         <>
+                           <IconCheck /> Run Sanitization
+                         </>
+                       )}
+                     </button>
+                   </div>
+   
+                   {isProcessing && (
+                     <div className="mt-4">
+                       <div className="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                         <span>Processing PDFs...</span>
+                         <span>{processingProgress}%</span>
+                       </div>
+                       <div className="w-full bg-neutral-700 rounded-full h-2">
+                         <div
+                           className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
+                           style={{ width: `${processingProgress}%` }}
+                         />
+                       </div>
+                     </div>
+                   )}
+                 </>
+               )}
+   
+               {/* ---- TAB: Results ---- */}
+               {step === 3 && (
+                 <div className="mt-3">
+                   {(lastZipUrl || (lastLowConf && lastLowConf.length > 0)) ? (
+                     <div className="rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-sm">
+                       {lastZipUrl && (
+                         <button
+                           type="button"
+                           className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800 mr-2"
+                           onClick={async () => {
+                             try {
+                               await downloadFile(lastZipUrl, `${clientName}_sanitized_pdfs.zip`);
+                             } catch (e) {
+                               alert("Could not download the ZIP. See console for details.");
+                               console.error(e);
+                             }
+                           }}
+                         >
+                           Download ZIP
+                         </button>
+                       )}
+   
+                       {(lastLowConf && lastLowConf.length > 0) && (
+                         <button
+                           type="button"
+                           className="inline-flex items-center rounded-lg border border-neutral-700 px-3 py-1.5 hover:bg-neutral-800"
+                           onClick={() => {
+                             if (goToSecondary) {
+                               goToSecondary(lastLowConf, clientName);
+                             } else {
+                               alert("Secondary hand-off not wired in App()");
+                             }
+                           }}
+                         >
+                           Proceed with secondary process batch
+                         </button>
+                       )}
+   
+                       {(lastLowConf && lastLowConf.length > 0) && (
+                         <div className="mt-3 text-xs text-neutral-400">
+                           <div className="font-medium text-neutral-300 mb-1">Low-confidence summary</div>
+                           <ul className="list-disc pl-5 space-y-1">
+                             {lastLowConf.map((it, idx) => {
+                               const base = (it.pdf || "").split(/[\\/]/).pop() || it.pdf;
+                               const pages = Object.keys(it.low_rects || {}).map((n) => Number(n) + 1);
+                               return (
+                                 <li key={idx}>
+                                   <span className="text-neutral-200">{base}</span>
+                                   {pages.length ? ` — pages: ${pages.join(", ")}` : ""}
+                                 </li>
+                               );
+                             })}
+                           </ul>
+                         </div>
+                       )}
+                     </div>
+                   ) : (
+                     <div className="text-xs text-neutral-400">No results to display yet.</div>
+                   )}
+                 </div>
+               )}
+             </>
+           )}
          </section>
        </div>
      </main>
@@ -1586,4 +1662,5 @@ export default function App() {
     </main>
   );
 }
+
 
