@@ -13,7 +13,7 @@ from redaction_engine     import RedactionEngine
 # from replacement_utils    import replace_manual_texts
 from replacement_utils    import collect_manual_replacements, apply_manual_replacements
 from placement_utils      import insert_content_in_rectangles
-from llm_utils import get_sensitive_terms_from_llm
+# from llm_utils import get_sensitive_terms_from_llm
 from paper_sz_ort_utils    import _classify_pdf_layout, _filter_rectangles_for_layout, _validate_replicated_rects_for_pdf
 
 import tempfile
@@ -134,33 +134,10 @@ def process_batch(
             sanitized = os.path.join(output_dir, f"{base}_sanitized.pdf")
 
         # ── Step 0: AUTO-EXTRACT sensitive terms via LLM (skip in secondary) ──
-        if not secondary:
-            # 0.1) first, get ALL text from this PDF:
-            all_text = extract_raw_text(pdf)
-            deduped_text = dedupe_text_pages(all_text)
-        
-            # 0.2) write context to LLM
-            context = (
-                "These texts come from engineering/manufacturing drawings "
-                "for machine parts. Non-sensitive info includes part names, "
-                "dimensions, machining processes and steps, safety notes and notes regarding any manufacturing steps. Sensitive info includes "
-                "personal names, emails, phone/fax numbers, postal addresses, country names, and Copyright notes."
-                "text can be in any language, but mostly English."
-            )
-            # 0.3) call the LLM helper
-            if deduped_text:  # checks if not empty
-                new_terms = get_sensitive_terms_from_llm(deduped_text, context)
-            else:
-                new_terms = []
-            print("new_terms:", new_terms)
-            # 0.4) merge with your existing manual list—no duplicates
-            existing_manual_names = manual_names[:] if manual_names is not None else []
-            manual_names = existing_manual_names[:]  # copy
-            for term in new_terms:
-                if term not in manual_names:
-                    manual_names.append(term)
-
-
+         # ── AUTO-EXTRACT sensitive terms via LLM (REMOVED) ──
+            # LLM functionality has been moved to a separate API endpoint
+            # Users can now generate sensitive terms via UI and pass them as manual_names
+            
 
     # ── Step 1: Per-page layout + per-page active rects ──
         page_layouts = _classify_pdf_layout(pdf_path=pdf, tol=0.1)
