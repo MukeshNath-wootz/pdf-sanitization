@@ -6,7 +6,8 @@ import fitz
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from pipeline import process_batch, process_text_only
+from pipeline import process_batch, process_text_only, extract_raw_text, dedupe_text_pages
+from llm_utils import get_sensitive_terms_from_llm
 from template_utils import TemplateManager
 
 # --- CORS: allow specific origins from env, else default to * for dev ---
@@ -567,6 +568,78 @@ async def sanitize_existing(
         "client": client,
         "low_conf": low_conf,
     }
+
+
+@app.post("/api/generate-sensitive-terms")
+async def generate_sensitive_terms(
+    files: list[UploadFile] = File(...),
+    context: str = Form(default="")
+):
+    """
+    Generate sensitive terms using LLM from uploaded PDF files.
+    Returns a list of detected sensitive terms that can be used in the UI.
+    """
+    if not files:
+        return JSONResponse({"error": "No files provided"}, status_code=400)
+    
+    # Save uploaded files temporarily
+    tmp_input = tempfile.mkdtemp(prefix="llm_")
+    pdf_paths = []
+    
+    try:
+        for file in files:
+            if not file.filename.lower().endswith('.pdf'):
+                continue
+            dst = os.path.join(tmp_input, file.filename)
+            with open(dst, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            pdf_paths.append(dst)
+        
+        if not pdf_paths:
+            return JSONResponse({"error": "No PDF files found"}, status_code=400)
+        
+        # Extract text from all PDFs
+        all_text_pages = []
+        for pdf_path in pdf_paths:
+            pages_text = extract_raw_text(pdf_path)
+            all_text_pages.extend(pages_text)
+        
+        # Deduplicate text across all pages
+        deduped_text = dedupe_text_pages(all_text_pages)
+        
+        # Default context if not provided
+        if not context.strip():
+            context = (
+                "These texts come from engineering/manufacturing drawings "
+                "for machine parts. Non-sensitive info includes part names, "
+                "dimensions, machining processes and steps, safety notes and notes regarding any manufacturing steps. Sensitive info includes "
+                "personal names, emails, phone/fax numbers, postal addresses, country names, and Copyright notes."
+                "text can be in any language, but mostly English."
+            )
+        
+        # Generate sensitive terms using LLM
+        if deduped_text.strip():
+            sensitive_terms = get_sensitive_terms_from_llm(deduped_text, context)
+        else:
+            sensitive_terms = []
+        
+        return {
+            "success": True,
+            "sensitive_terms": sensitive_terms,
+            "total_pages_processed": len(all_text_pages),
+            "text_length": len(deduped_text)
+        }
+        
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to generate sensitive terms: {str(e)}"}, status_code=500)
+    
+    finally:
+        # Clean up temporary files
+        try:
+            shutil.rmtree(tmp_input)
+        except Exception:
+            pass
+
 
 
 @app.get("/api/download/{filename}")
