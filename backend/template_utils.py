@@ -320,11 +320,7 @@ class TemplateManager:
                 print(f"[TemplateMulti] Could not classify layout for {src_pdf}: {e}")
                 src_paper, src_orient = None, None
 
-            if src_paper and src_orient:
-                active_rects = _filter_rectangles_for_layout(norm_rects, src_paper, src_orient)
-            else:
-                # If layout detection fails, use all rects for this source as a fallback.
-                active_rects = norm_rects
+            active_rects = norm_rects
 
             if not active_rects:
                 print(f"[TemplateMulti] No rectangles match the source layout for {src_pdf}; skipping this group.")
