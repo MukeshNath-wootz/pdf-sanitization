@@ -73,8 +73,8 @@ def transform_bbox_for_rotation(bbox, pw, ph, pr):
         nx2, ny2 = y2,        pw - x1
     elif pr == 180:
         # origin effectively at bottom-right
-        nx1, ny1 = ph - y2,   pw - x2
-        nx2, ny2 = ph - y1,   pw - x1
+        nx1, ny1 = pw - x2,   ph - y2
+        nx2, ny2 = pw - x1,   ph - y1
     elif pr == 270:
         # origin effectively at bottom-left
         nx1, ny1 = ph - y2,   x1
