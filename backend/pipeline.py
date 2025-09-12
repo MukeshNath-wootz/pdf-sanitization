@@ -145,14 +145,15 @@ def process_batch(
 
         # Build per-page active rectangles, preserving tidx & group_id
         active_rects_by_page = []   # List[List[dict]]
-        for (paper_i, orient_i, _wh) in page_layouts:
+        for page_no, (paper_i, orient_i, _wh) in enumerate(page_layouts):
             filtered = _filter_rectangles_for_layout(rectangles, paper_i, orient_i)
             page_rects = []
             for i, r in enumerate(rectangles):
                 if r in filtered:
                     rr = dict(r)                          # shallow copy
                     rr["tidx"] = i                        # keep template index
-                    rr["group_id"] = f"idx:{r.get('source_index', 0)}" or r.get("source_pdf")
+                    src_idx = r.get("source_index", 0)
+                    rr["group_id"] = f"src{src_idx}|p{page_no}"  # <-- page-scoped grouping
                     page_rects.append(rr)
             active_rects_by_page.append(page_rects)
         
