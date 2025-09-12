@@ -267,6 +267,9 @@ def process_batch(
         high_conf_rects = []
         low_confidence_by_page = defaultdict(list)
 
+        # NEW: PDF-level flag → "every page has ≥1 passing group"
+        pdf_all_pages_have_passing_group = True   # start optimistic
+
         for pg, recs in pages.items():
             # split this page’s rects into groups
             groups = defaultdict(list)
@@ -274,41 +277,42 @@ def process_batch(
                 gid = rec.get("group_id")
                 groups[gid].append(rec)
         
-            # compute pass/fail per group, and keep worst rscore and failing recs
-            group_pass = {}
-            group_worst = {}
-            group_fail_rects = {}
+            # compute per-group pass/fail AND collect per-rect passes/fails
+            page_passing_rects = []
+            page_failing_rects = []
+            page_has_passing_group = False
         
             for gid, lst in groups.items():
-                fails = []
-                min_r = 1.0
+                group_fails = []
                 for rec in lst:
-                    bad = (rec["iscore"] < THRESH_I)
-                    if bad:
-                        fails.append(rec)
-                    if rec["rscore"] < min_r:
-                        min_r = rec["rscore"]
-                group_pass[gid] = (len(fails) == 0)
-                group_worst[gid] = min_r
-                if fails:
-                    group_fail_rects[gid] = fails
+                    rect_pass = (
+                        rec["iscore"] >= THRESH_I
+                    )
+                    if rect_pass:
+                        page_passing_rects.append(rec)
+                    else:
+                        group_fails.append(rec)
+                        page_failing_rects.append(rec)
         
-            # if any group passes, accept that group's rects for this page
-            passing = [gid for gid, ok in group_pass.items() if ok]
-            if passing:
-                chosen = passing[0]   # or choose best by group_worst/avg if you prefer
-                for rec in groups[chosen]:
-                    high_conf_rects.append({
-                        "page": rec["page"],
-                        "bbox": rec["bbox"],
-                        "tidx": rec["tidx"],
-                    })
-                continue
+                # A group "passes" only if no rect in that group failed
+                if len(group_fails) == 0:
+                    page_has_passing_group = True
         
-            # otherwise all groups failed; pick the worst group (lowest min rscore)
-            worst_gid = min(group_worst, key=lambda g: group_worst[g])
-            for rec in group_fail_rects.get(worst_gid, []):
-                low_confidence_by_page[int(pg)].append(rec["bbox"])
+            # collect all individually passing rects across groups
+            for rec in page_passing_rects:
+                high_conf_rects.append({
+                    "page": rec["page"],
+                    "bbox": rec["bbox"],
+                    "tidx": rec["tidx"],
+                })
+        
+            # store failing rects for reporting
+            if page_failing_rects:
+                low_confidence_by_page[int(pg)].extend(r["bbox"] for r in page_failing_rects)
+        
+            # AND across pages — if any page lacks a passing group → mark PDF as NOT fully passing
+            if not page_has_passing_group:
+                pdf_all_pages_have_passing_group = False
             
         # transform high-conf rects for redaction
         doc = fitz.open(pdf)
@@ -415,7 +419,7 @@ def process_batch(
             apply_manual_replacements(sanitized, manual_rep_data, replicated_rectangles)
         
         if low_confidence_by_page:
-            print(f"Low-confidence rectangles found in {pdf}: {dict(low_confidence_by_page)}")
+            print(f"[LowConf][PDF] Low-confidence rectangles found in {pdf}: {dict(low_confidence_by_page)}")
             low_conf.append({
                 "pdf": pdf,
                 "low_rects": dict(low_confidence_by_page)
