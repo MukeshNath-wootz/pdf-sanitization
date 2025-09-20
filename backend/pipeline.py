@@ -309,7 +309,7 @@ def process_batch(
                 })
         
             # store failing rects for reporting
-            if page_failing_rects:
+            if page_failing_rects and not page_has_passing_group:
                 low_confidence_by_page[int(pg)].extend(r["bbox"] for r in page_failing_rects)
         
             # AND across pages — if any page lacks a passing group → mark PDF as NOT fully passing
