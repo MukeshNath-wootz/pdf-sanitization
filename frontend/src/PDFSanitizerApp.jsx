@@ -605,7 +605,6 @@ function NewClientSetupPage({ pdfFiles, clientName, onBack, initialSecondary  })
               {currentFiles
                 .map((f, i) => ({ f, i }))       // pair file with original index
                 .filter(({ f }) => f.name.toLowerCase().endsWith(".pdf"))
-                .slice(0, 8) //top 8 pdfs only
                 .map(({ f, i }) => (
                   <button
                     key={`${f.name}-${i}`}
@@ -1677,6 +1676,7 @@ export default function App() {
     </main>
   );
 }
+
 
 
 
