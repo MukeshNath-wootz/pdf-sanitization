@@ -1,27 +1,46 @@
 # api_app.py
 import os, shutil, tempfile, zipfile, json, uuid
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, Form, File, Request
+from fastapi import FastAPI, UploadFile, Form, File, Request, BackgroundTasks
 import fitz 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from pipeline import process_batch, process_text_only, extract_raw_text, dedupe_text_pages
 from llm_utils import get_sensitive_terms_from_llm
 from template_utils import TemplateManager
+
 
 # --- CORS: allow specific origins from env, else default to * for dev ---
 _raw = os.getenv("CORS_ORIGINS", "").strip()
 allow_origins = [o.strip() for o in _raw.split(",") if o.strip()] if _raw else ["*"]
 
 app = FastAPI()
+
+# ---- Concurrency controls (env-tunable) ----
+MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+SANITIZE_WORKERS = int(os.getenv("SANITIZE_WORKERS", str(MAX_CONCURRENT_JOBS)))
+SEM = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+EXECUTOR = ThreadPoolExecutor(max_workers=SANITIZE_WORKERS)
+
+def _new_job_workspace(prefix: str = "wootz_job_"):
+    job_id = uuid.uuid4().hex
+    base = Path(tempfile.mkdtemp(prefix=f"{prefix}{job_id}_"))
+    (base / "uploads").mkdir(exist_ok=True, parents=True)
+    (base / "outputs").mkdir(exist_ok=True, parents=True)
+    return job_id, base
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
+
+
 
 # Optional friendly root
 @app.get("/")
@@ -32,11 +51,12 @@ async def root():
 STATIC_DIR = os.path.abspath("output_sanitized")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+
 import time
 # helper to delete old zip files
 def delete_old_zips(folder: str, hours: int = 1):
     """
-    Deletes ZIP files in `folder` older than `hours`.
+    Delete zip files older than 'hours' hours in the specified folder.
     """
     now = time.time()
     cutoff = now - hours * 3600
@@ -59,6 +79,13 @@ def zip_sanitized_pdfs(pdf_paths: list[str], output_dir: str, zip_name: str) -> 
             zipf.write(path, arcname=arcname)
     return zip_path
     
+def _safe_filename(name: str) -> str:
+    name = (name or "file.pdf").strip().replace("\\", "/").split("/")[-1]
+    keep = "-_.() "
+    cleaned = "".join(c for c in name if c.isalnum() or c in keep).strip()
+    return cleaned or "file.pdf"
+
+
 def _safe_client_id(s: str) -> str:
     s = (s or "").strip().lower().replace(" ", "_")
     return "".join(ch for ch in s if ch.isalnum() or ch in "_-") or "template"
@@ -107,24 +134,29 @@ def _load_passlog(client: str) -> dict:
 
 def _save_passlog(client: str, data: dict) -> None:
     path = _passlog_path_for(client)
+    for _ in range(3):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            return
+        except Exception:
+            time.sleep(0.05)
+    # last attempt
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
 
+
 def _norm_key_from_path(p: str) -> str:
     """
-    Use base filename, strip one or MORE trailing '_sanitized' suffixes, keep .pdf.
-    'X_sanitized.pdf' or 'X_sanitized_sanitized.pdf' -> 'X.pdf'
+    normalize path to base name only (no directories, lowercase)
     """
-    base = os.path.basename(p or "")
-    lower = base.lower()
-    # loop off trailing '_sanitized' segments
-    while lower.endswith("_sanitized.pdf"):
-        base = base[: -(len("_sanitized.pdf"))] + ".pdf"
-        lower = base.lower()
-    return base
+    try:
+        return os.path.splitext(os.path.basename(p))[0].strip().lower()
+    except Exception:
+        return (p or "").strip().lower()
 
 
 # ---------- Optional Supabase outputs/templates/logos ----------
@@ -173,6 +205,7 @@ def _sb_upload_and_sign(local_path: str, client: str, job_id: str) -> str | None
 @app.post("/api/sanitize")
 async def sanitize(
     request: Request,
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     template_zones: str = Form(...),
     manual_names: str = Form(default="[]"),
@@ -182,11 +215,17 @@ async def sanitize(
     client_name: str = Form(...),
     secondary: bool = Form(default=False),
 ):
+    # --- per-job workspace and uploads ---
+    job_id, workdir = _new_job_workspace()
+    uploads_dir = workdir / 'uploads'
+    out_dir = workdir / 'outputs'
+
     # 1) persist uploads to a temp folder
-    tmp_input = tempfile.mkdtemp(prefix="in_")
+    tmp_input = str(uploads_dir)
     paths: list[str] = []
     for file in files:
-        dst = os.path.join(tmp_input, file.filename)
+        safe = _safe_filename(file.filename)
+        dst = os.path.join(tmp_input, safe)
         with open(dst, "wb") as f:
             shutil.copyfileobj(file.file, f)
         paths.append(dst)
@@ -212,15 +251,21 @@ async def sanitize(
 
 
     if (len(zones) == 0) and (names or replacements):
-        # Manual-only path (no template save)
-        process_text_only(
-            pdf_paths=paths,                 # you already built this list above
-            output_dir=STATIC_DIR,           # reuse your standard output folder
-            manual_names=names,
-            text_replacements=replacements,
-            input_root=None,
-            secondary=False
-        )
+    # ===== Manual-only path (no template save) =====
+        # Run text-only replacement under concurrency gate, outputting into this job's out_dir
+        async with SEM:
+            loop = asyncio.get_running_loop()
+            def _run_manual():
+                return process_text_only(
+                    pdf_paths=paths,
+                    output_dir=str(out_dir),     # job-scoped outputs
+                    manual_names=names,
+                    text_replacements=replacements,
+                    input_root=None,
+                    secondary=False
+                )
+            await loop.run_in_executor(EXECUTOR, _run_manual)
+
         template_id = "manual_only"          # so the response object has something sensible
         # then fall through to the common ZIP/response code below
     else:
@@ -236,18 +281,23 @@ async def sanitize(
             image_map=img_map,
         )
     
-        # 5) run batch
-        low_conf = process_batch(
-            pdf_paths=paths,
-            template_id=template_id,
-            output_dir=STATIC_DIR,
-            threshold=threshold,
-            manual_names=names,
-            text_replacements=replacements,
-            image_map=img_map,
-            input_root=None,
-            secondary=secondary,   # <-- skip LLM/manual/replacements when True
-        )
+        # 5) Run the heavy batch with this template under concurrency gate, into job out_dir
+        async with SEM:
+            loop = asyncio.get_running_loop()
+            def _run_batch():
+                return process_batch(
+                    pdf_paths=paths,
+                    template_id=template_id,
+                    output_dir=str(out_dir),     # job-scoped outputs
+                    threshold=threshold,
+                    manual_names=names,
+                    text_replacements=replacements,
+                    image_map=img_map,
+                    input_root=None,
+                    secondary=secondary,
+                )
+            low_conf = await loop.run_in_executor(EXECUTOR, _run_batch)
+
 
     # -- Passlog: filter out pages that have passed before & update the passlog with new passes
     passlog = _load_passlog(client)
@@ -306,47 +356,57 @@ async def sanitize(
 
     # 6) — Clean up old ZIPs first
     delete_old_zips(STATIC_DIR, hours=1)
-    # 7) zip sanitized PDFs
-    sanitized_paths = []
-    for p in paths:
-        base = os.path.splitext(os.path.basename(p))[0]
-        fn = f"{base}_sanitized.pdf"
-        sanitized_path = os.path.join(STATIC_DIR, fn)
-        # if pipeline did not produce it (edge cases), create a copy so zipping is safe
-        if not os.path.exists(sanitized_path):
-            try:
-                os.makedirs(os.path.dirname(sanitized_path), exist_ok=True)
-                shutil.copyfile(p, sanitized_path)
-            except Exception as _e:
-                print("[API] Could not create fallback sanitized file:", sanitized_path, _e)
-                # If even copy fails, we just won't include it
-                sanitized_path = None
-        if sanitized_path and os.path.exists(sanitized_path):
-            sanitized_paths.append(sanitized_path)
     
-    zip_filename = f"{client}_sanitized_pdfs.zip"
-    zip_path = os.path.join(STATIC_DIR, zip_filename)
-    if sanitized_paths:
-        zip_append_with_versions(zip_path, sanitized_paths)
-
-
-
-    # Optional cleanup of individual PDFs
-    # for f in sanitized_paths:
-    #     try:
-    #         os.remove(f)
-    #     except Exception:
-    #         pass
-    accept = (request.headers.get("accept") or "").lower()
-    zip_url = f"/api/download/{os.path.basename(zip_path)}"
+    # 7) Collect sanitized PDFs from this job's output dir and zip them (collision-proof)
+    sanitized_paths = [str(p) for p in (out_dir.glob("*_sanitized.pdf")) if p.is_file()]
     
-    if os.path.exists(zip_path) and "application/json" in accept:
-        # Success path: return JSON (no Supabase; local URLs only)
-        outs = []
+    # Optional fallback: if none found (edge cases), include originals as "_sanitized.pdf"
+    if not sanitized_paths:
         for p in paths:
-            base = os.path.splitext(os.path.basename(p))[0]
-            fn = f"{base}_sanitized.pdf"
-            outs.append({"name": fn, "url": f"/api/download/{fn}"})
+            dst = out_dir / (Path(p).stem + "_sanitized.pdf")
+            try:
+                shutil.copyfile(p, dst)
+                sanitized_paths.append(str(dst))
+            except Exception:
+                pass  # if copy fails, skip
+    
+    # Create a unique, per-job zip inside the job workspace
+    zip_filename = f"{client}_{job_id}_sanitized.zip"
+    job_zip_path = out_dir / zip_filename
+    with zipfile.ZipFile(job_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for pth in sanitized_paths:
+            zf.write(pth, arcname=os.path.basename(pth))
+    
+    # Expose the ZIP (and individual PDFs) via STATIC_DIR so /api/download works
+    final_zip_path = os.path.join(STATIC_DIR, zip_filename)
+    try:
+        shutil.copyfile(job_zip_path, final_zip_path)
+    except Exception:
+        pass
+    
+    outs = []
+    for pth in sanitized_paths:
+        base = os.path.basename(pth)
+        dest = os.path.join(STATIC_DIR, base)
+        try:
+            shutil.copyfile(pth, dest)
+        except Exception:
+            pass
+        outs.append({"name": base, "url": f"/api/download/{base}"})
+    
+    zip_url = f"/api/download/{os.path.basename(final_zip_path)}"
+    
+    accept = (request.headers.get("accept") or "").lower()
+    
+    if os.path.exists(final_zip_path) and "application/json" in accept:
+        # schedule asynchronous cleanup of the job workspace
+        def _cleanup(path: Path):
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
+        background_tasks.add_task(_cleanup, workdir)
+    
         return {
             "success": True,
             "outputs": outs,
@@ -356,25 +416,17 @@ async def sanitize(
             "low_conf": low_conf,
         }
     
-    # Legacy / default: send the ZIP directly (unchanged for non-JSON callers)
-    if os.path.exists(zip_path):
-        return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
-
-
+    if os.path.exists(final_zip_path):
+        def _cleanup(path: Path):
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
+        background_tasks.add_task(_cleanup, workdir)
+        return FileResponse(final_zip_path, filename=os.path.basename(final_zip_path), media_type="application/zip")
+    
     # Fallback: return JSON with URLs if ZIP creation failed
-    job_id = uuid.uuid4().hex
-    outs = []
-    for p in paths:
-        base = os.path.splitext(os.path.basename(p))[0]
-        fn = f"{base}_sanitized.pdf"
-        local_out = os.path.join(STATIC_DIR, fn)
-
-        public_url = _sb_upload_and_sign(local_out, client=client, job_id=job_id)
-        if public_url:
-            outs.append({"name": fn, "url": public_url})
-        else:
-            outs.append({"name": fn, "url": f"/api/download/{fn}"})
-
+    # (Optionally upload each PDF to Supabase here if desired)
     return {
         "success": True,
         "outputs": outs,
@@ -388,6 +440,7 @@ async def sanitize(
 @app.post("/api/sanitize-existing")
 async def sanitize_existing(
     request: Request,
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     manual_names: str = Form(default="[]"),
     text_replacements: str = Form(default="{}"),
@@ -408,11 +461,18 @@ async def sanitize_existing(
     # confirm template exists
     tm.load_profile(template_id)
 
+    # --- per-job workspace and uploads ---
+    job_id, workdir = _new_job_workspace()
+    uploads_dir = workdir / 'uploads'
+    out_dir = workdir / 'outputs'
+
+
     # save uploads to a temp folder (not into output dir)
-    tmp_input = tempfile.mkdtemp(prefix="in_")
+    tmp_input = str(uploads_dir)    
     paths: list[str] = []
     for f in files:
-        dst = os.path.join(tmp_input, f.filename)
+        safe = _safe_filename(f.filename)
+        dst = os.path.join(tmp_input, safe)
         with open(dst, "wb") as w:
             shutil.copyfileobj(f.file, w)
         paths.append(dst)
@@ -425,17 +485,22 @@ async def sanitize_existing(
     raw_map = prof.get("image_map") or {}
     image_map = {int(k): v for k, v in raw_map.items()} if raw_map else {}
 
-    low_conf = process_batch(
-        pdf_paths=paths,
-        template_id=template_id,
-        output_dir=STATIC_DIR,
-        threshold=threshold,
-        manual_names=names,
-        text_replacements=replacements,
-        image_map=image_map,
-        input_root=None,
-        secondary=secondary,
-    )
+    async with SEM:
+        loop = asyncio.get_running_loop()
+        def _run2():
+            return process_batch(
+                pdf_paths=paths,
+                template_id=template_id,
+                output_dir=str(out_dir),
+                threshold=threshold,
+                manual_names=names,
+                text_replacements=replacements,
+                image_map=image_map,
+                input_root=None,
+                secondary=secondary,
+            )
+        low_conf = await loop.run_in_executor(EXECUTOR, _run2)
+
     # -- Passlog: filter out pages that have passed before & update the passlog with new passes
     passlog = _load_passlog(client)
     # Build a quick map of failing pages returned by pipeline, keyed by normalized base name
@@ -495,45 +560,41 @@ async def sanitize_existing(
     # 6) — Clean up old ZIPs first
     delete_old_zips(STATIC_DIR, hours=1)
     # 7) zip sanitized PDFs
-    sanitized_paths = []
-    for p in paths:
-        base = os.path.splitext(os.path.basename(p))[0]
-        fn = f"{base}_sanitized.pdf"
-        sanitized_path = os.path.join(STATIC_DIR, fn)
-        # if pipeline did not produce it (edge cases), create a copy so zipping is safe
-        if not os.path.exists(sanitized_path):
-            try:
-                os.makedirs(os.path.dirname(sanitized_path), exist_ok=True)
-                shutil.copyfile(p, sanitized_path)
-            except Exception as _e:
-                print("[API] Could not create fallback sanitized file:", sanitized_path, _e)
-                # If even copy fails, we just won't include it
-                sanitized_path = None
-        if sanitized_path and os.path.exists(sanitized_path):
-            sanitized_paths.append(sanitized_path)
-    
-    zip_filename = f"{client}_sanitized_pdfs.zip"
+    sanitized_paths = [str(p) for p in (out_dir.glob("*_sanitized.pdf")) if p.is_file()]
+    zip_filename = f"{client}_{job_id}_sanitized.zip"
+    job_zip_path = out_dir / zip_filename
+    with zipfile.ZipFile(job_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for pth in (sanitized_paths or []):
+            if os.path.exists(pth):
+                zf.write(pth, arcname=os.path.basename(pth))
     zip_path = os.path.join(STATIC_DIR, zip_filename)
-    if sanitized_paths:
-        zip_append_with_versions(zip_path, sanitized_paths)
-
-
-
-    # Optional cleanup of individual PDFs
-    # for f in sanitized_paths:
-    #     try:
-    #         os.remove(f)
-    #     except Exception:
-    #         pass
-    accept = (request.headers.get("accept") or "").lower()
+    try:
+        shutil.copyfile(job_zip_path, zip_path)
+    except Exception:
+        pass
     zip_url = f"/api/download/{os.path.basename(zip_path)}"
-    
+
+    # mirror individual outputs into STATIC_DIR for download endpoints
+    outs = []
+    for pth in (sanitized_paths or []):
+        base = os.path.basename(pth)
+        dest = os.path.join(STATIC_DIR, base)
+        try:
+            shutil.copyfile(pth, dest)
+        except Exception:
+            pass
+        outs.append({"name": base, "url": f"/api/download/{base}"})
+
+    # schedule workspace cleanup
+    def _cleanup2(path: Path):
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+    background_tasks.add_task(_cleanup2, workdir)
+
+    accept = (request.headers.get("accept") or "").lower()
     if os.path.exists(zip_path) and "application/json" in accept:
-        outs = []
-        for p in paths:
-            base = os.path.splitext(os.path.basename(p))[0]
-            fn = f"{base}_sanitized.pdf"
-            outs.append({"name": fn, "url": f"/api/download/{fn}"})
         return {
             "success": True,
             "outputs": outs,
@@ -542,13 +603,12 @@ async def sanitize_existing(
             "client": client,
             "low_conf": low_conf,
         }
-    
     if os.path.exists(zip_path):
-        return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+        return FileResponse(zip_path, filename=os.path.basename(zip_path), media_type="application/zip")
+
 
 
     # fallback
-    job_id = uuid.uuid4().hex
     outs = []
     for p in paths:
         base = os.path.splitext(os.path.basename(p))[0]
@@ -573,72 +633,84 @@ async def sanitize_existing(
 @app.post("/api/generate-sensitive-terms")
 async def generate_sensitive_terms(
     files: list[UploadFile] = File(...),
-    context: str = Form(default="")
+    context: str = Form(default=""),
+    background_tasks: BackgroundTasks = None,
 ):
     """
     Generate sensitive terms using LLM from uploaded PDF files.
-    Returns a list of detected sensitive terms that can be used in the UI.
+    Safe for concurrent users: per-job workspace + bounded off-loop execution.
     """
     if not files:
         return JSONResponse({"error": "No files provided"}, status_code=400)
-    
-    # Save uploaded files temporarily
-    tmp_input = tempfile.mkdtemp(prefix="llm_")
-    pdf_paths = []
-    
-    try:
-        for file in files:
-            if not file.filename.lower().endswith('.pdf'):
-                continue
-            dst = os.path.join(tmp_input, file.filename)
-            with open(dst, "wb") as f:
-                shutil.copyfileobj(file.file, f)
-            pdf_paths.append(dst)
-        
-        if not pdf_paths:
-            return JSONResponse({"error": "No PDF files found"}, status_code=400)
-        
-        # Extract text from all PDFs
-        all_text_pages = []
-        for pdf_path in pdf_paths:
-            pages_text = extract_raw_text(pdf_path)
-            all_text_pages.extend(pages_text)
-        
-        # Deduplicate text across all pages
-        deduped_text = dedupe_text_pages(all_text_pages)
-        
-        # Default context if not provided
-        if not context.strip():
-            context = (
-                "These texts come from engineering/manufacturing drawings "
-                "for machine parts. Non-sensitive info includes part names, "
-                "dimensions, machining processes and steps, safety notes and notes regarding any manufacturing steps. Sensitive info includes "
-                "personal names, emails, phone/fax numbers, postal addresses, country names, and Copyright notes."
-                "text can be in any language, but mostly English."
-            )
-        
-        # Generate sensitive terms using LLM
-        if deduped_text.strip():
-            sensitive_terms = get_sensitive_terms_from_llm(deduped_text, context)
-        else:
-            sensitive_terms = []
-        
-        return {
-            "success": True,
-            "sensitive_terms": sensitive_terms,
-            "total_pages_processed": len(all_text_pages),
-            "text_length": len(deduped_text)
-        }
-        
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to generate sensitive terms: {str(e)}"}, status_code=500)
-    
-    finally:
-        # Clean up temporary files
+
+    # Per-job workspace (isolates user runs)
+    job_id, workdir = _new_job_workspace(prefix="llm_")
+    uploads_dir = workdir / "uploads"
+
+    # Save only PDF uploads into this job's folder
+    pdf_paths: list[str] = []
+    for file in files:
+        filename = _safe_filename(file.filename or "")
+        if not filename.lower().endswith(".pdf"):
+            continue
+        dst = uploads_dir / filename
+        with open(dst, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        pdf_paths.append(str(dst))
+
+    if not pdf_paths:
+        # Schedule cleanup and exit early
+        if background_tasks:
+            background_tasks.add_task(lambda p: shutil.rmtree(p, ignore_errors=True), workdir)
+        return JSONResponse({"error": "No PDF files found"}, status_code=400)
+
+    # Default context if not provided
+    if not context.strip():
+        context = (
+            "These texts come from engineering/manufacturing drawings for machine parts. "
+            "Non-sensitive info includes part names, dimensions, machining processes/steps, "
+            "safety notes, and general manufacturing notes. Sensitive info includes personal names, "
+            "emails, phone/fax numbers, postal addresses, country names, and copyright notices. "
+            "Text can be in any language, mostly English."
+        )
+
+    # Run heavy work off the event loop under a small concurrency gate
+    async with SEM:
+        loop = asyncio.get_running_loop()
+
+        def _run_extract_and_llm():
+            # Extract text from all PDFs
+            all_text_pages: list[str] = []
+            for pdf_path in pdf_paths:
+                pages_text = extract_raw_text(pdf_path)
+                all_text_pages.extend(pages_text)
+
+            # Deduplicate across pages/files
+            deduped_text = dedupe_text_pages(all_text_pages)
+
+            # Call LLM only if we have something meaningful
+            sensitive_terms = get_sensitive_terms_from_llm(deduped_text, context) if deduped_text.strip() else []
+
+            return {
+                "success": True,
+                "sensitive_terms": sensitive_terms,
+                "total_pages_processed": len(all_text_pages),
+                "text_length": len(deduped_text),
+            }
+
         try:
-            shutil.rmtree(tmp_input)
-        except Exception:
-            pass
+            result = await loop.run_in_executor(EXECUTOR, _run_extract_and_llm)
+        except Exception as e:
+            # Ensure cleanup even on failure
+            if background_tasks:
+                background_tasks.add_task(lambda p: shutil.rmtree(p, ignore_errors=True), workdir)
+            return JSONResponse({"error": f"Failed to generate sensitive terms: {str(e)}"}, status_code=500)
+
+    # Schedule workspace cleanup after successful response
+    if background_tasks:
+        background_tasks.add_task(lambda p: shutil.rmtree(p, ignore_errors=True), workdir)
+
+    return result
 
 
 
@@ -701,8 +773,8 @@ async def upload_logo(file: UploadFile = File(...)):
     # Local fallback
     local_dir = os.path.join("assets", "logos")
     os.makedirs(local_dir, exist_ok=True)
-    local_path = os.path.join(local_dir, filename)
+    unique_name = f"{uuid.uuid4().hex}_{filename}"
+    local_path = os.path.join(local_dir, unique_name)
     with open(local_path, "wb") as f:
         f.write(data)
-    # Return a "key-like" path that the pipeline will treat as local
-    return {"key": f"logos/{filename}"}
+    return {"key": f"logos/{unique_name}"}
